@@ -50,25 +50,42 @@ Go to <https://fiji.sc>, download Fiji for your computer and unzip it somewhere 
 Documents folder). There is no installer: start it by double-clicking `Fiji.app` (Mac) or `ImageJ-win64.exe` inside
 the `Fiji.app` folder (Windows). Fiji already includes BigDataViewer.
 
-### 1c. Get bigmip
-Either:
-- on the GitHub page, click the green **Code** button, then **Download ZIP**, and unzip it (e.g. to
-  `Documents\bigmip`); or
-- with GitHub Desktop: **File › Clone repository**.
+### 1c. Install GitHub Desktop
+bigmip is downloaded and kept up to date with **GitHub Desktop** (free): <https://desktop.github.com>.
+1. You need a free GitHub account (<https://github.com/signup>). Send your GitHub username to Sam Brill-Weil to get
+   access, then accept the invitation that arrives by email.
+2. Install GitHub Desktop, open it and sign in with that account.
 
-### 1d. Install bigmip
-Open a terminal **in the bigmip folder**:
-- **Windows:** open the folder in File Explorer, click the address bar, type `powershell` and press Enter.
-- **Mac:** open Terminal, type `cd ` (with a space), drag the bigmip folder onto the window, and press Enter.
+### 1d. Get bigmip
+In GitHub Desktop: **File › Clone repository**. On the **GitHub.com** tab, pick **sambrillweil/bigmip** (or, on the
+**URL** tab, paste `https://github.com/sambrillweil/bigmip`). Choose where to keep it (e.g.
+`Documents\GitHub\bigmip`) and click **Clone**.
 
-Then type this and press Enter:
+### 1e. Install bigmip
+In GitHub Desktop, with bigmip as the current repository: **Repository › Open in Command Prompt** (Windows; it may
+say PowerShell) or **Repository › Open in Terminal** (Mac). A terminal opens in the bigmip folder. Type this and
+press Enter:
 
 ```
-py -m pip install .
+py -m pip install -e .
 ```
 
 (On a Mac, type `python3` instead of `py`, here and everywhere below.) This downloads the free packages bigmip uses
-(numpy, h5py, hdf5plugin, tifffile, matplotlib) and installs bigmip. Setup is done.
+(numpy, h5py, hdf5plugin, tifffile, matplotlib) and links bigmip to this folder (`-e`), so the updates you get in
+the next step take effect without installing again. Setup is done.
+
+### 1f. Getting updates
+When bigmip is updated:
+1. Open GitHub Desktop (current repository: **bigmip**) and click **Fetch origin**.
+2. If the button then says **Pull origin**, click it.
+3. Close and reopen the bigmip app.
+
+If an update says it needs new packages, run the install line from 1e again (it's harmless to repeat at any time).
+
+Only ever **Fetch** and **Pull**: never click **Commit** or **Push** in GitHub Desktop for bigmip, and don't edit
+the files in the bigmip folder. If GitHub Desktop lists changed files under **Changes**, right-click them,
+choose **Discard changes**, then pull. bigmip never keeps your images, notes or MIPs in this folder, so updating never
+touches your data.
 
 ---
 
@@ -306,8 +323,10 @@ It opens directly, with no conversion.
 | Problem | Fix |
 |---|---|
 | `py` "is not recognized", or the Microsoft Store opens | Python isn't installed, or "Add python.exe to PATH" wasn't ticked. Re-run the Python installer, choose "Modify", and enable "Add Python to environment variables". |
-| `start_bigmip.bat` says bigmip is not installed | Do step 1d (install) in the bigmip folder. |
-| `No module named ...` | `py -m pip install .` again in the bigmip folder. |
+| `start_bigmip.bat` says bigmip is not installed | Do step 1e (install) in the bigmip folder. |
+| `No module named ...` | Run `py -m pip install -e .` again in the bigmip folder (step 1e). |
+| GitHub Desktop won't pull ("you have changes") | Under **Changes**, right-click the files, **Discard changes**, then **Pull origin**. |
+| An update doesn't seem to have arrived | **Fetch origin**, then **Pull origin** in GitHub Desktop, and restart the app. |
 | An error about `imagecodecs` with a TIFF | The TIFF is compressed: `py -m pip install imagecodecs` |
 | Very slow | The file is probably on a network or cloud drive (Google Drive, a server). Copy it to a local disk, or test first at a smaller resolution. |
 | The computer runs out of memory | Use fewer parallel workers. The MIP itself needs about width × height × channels × 2 bytes of memory, e.g. ~3.5 GB for a 22,000 × 21,000 × 4-channel image. |
@@ -355,6 +374,12 @@ py -m pytest -q
 ```
 The tests build small synthetic `.ims` and OME-TIFF files and check that projections, scale, names, colors, notes,
 reports and renaming come out exactly right.
+
+### Publishing changes (maintainer)
+Run the tests, then in GitHub Desktop write a summary, **Commit to main** and **Push origin**. Everyone else gets
+the change with **Fetch origin › Pull origin** (step 1f). If a change adds a package, add it to `pyproject.toml`
+and `requirements.txt` and say in the commit that the install line (1e) must be run again. For a notable change,
+raise the version in both `pyproject.toml` and `bigmip/__init__.py`.
 
 ## License
 MIT. See `LICENSE`.
