@@ -11,9 +11,24 @@ Metadata (Stack.meta)
 """
 import os
 import re
+import time
 from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
+
+RETRIES = 4          # network / cloud drives (Google Drive, servers) sometimes fail a read; try again before giving up
+
+
+def _retry(read, what):
+    """Run read(); on an OS / HDF5 read error wait and retry, then fail with an explanation."""
+    for attempt in range(RETRIES + 1):
+        try:
+            return read()
+        except OSError as e:
+            if attempt == RETRIES:
+                raise OSError(f"could not read {what} after {RETRIES + 1} tries ({e}). If the file is on a network or "
+                              f"cloud drive (e.g. Google Drive), copy it to a local disk and run again.") from e
+            time.sleep(2 * (attempt + 1))
 
 from .colors import color_from_ome, color_from_wavelength
 
@@ -43,7 +58,7 @@ def _ims_block_max(args):
         d = f[dset]
         acc = None
         for z in range(z0, z1, zstep):
-            slab = d[z:min(z1, z + zstep), y0:y1, x0:x1]
+            slab = _retry(lambda: d[z:min(z1, z + zstep), y0:y1, x0:x1], f"planes {z}+ of block ({y0}, {x0})")
             m = slab.max(axis=0)
             acc = m if acc is None else np.maximum(acc, m)
     return y0, x0, acc
@@ -206,7 +221,8 @@ class TiffStack:
         z1 = self.nz if z1 is None else min(z1, self.nz)
         out = None
         for n, z in enumerate(range(z0, z1), 1):
-            plane = self.pages[self._page_index(channel, z)].asarray()
+            plane = _retry(lambda: self.pages[self._page_index(channel, z)].asarray(),
+                           f"plane {z + 1} of channel {channel + 1}")
             out = plane.copy() if out is None else np.maximum(out, plane, out=out)
             if progress:
                 progress(n, z1 - z0)
