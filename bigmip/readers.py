@@ -181,7 +181,7 @@ class TiffStack:
         if not names and ij.get("Labels"):
             names = list(ij["Labels"])[:self.nc]
         names = (names + [f"Channel {c + 1}" for c in range(self.nc)])[:self.nc]
-        # Fusion / Bitplane OME-TIFFs store colours as 0x00BBGGRR, everyone else as standard RGBA
+        # Fusion / Bitplane OME-TIFFs store colors as 0x00BBGGRR, everyone else as standard RGBA
         bgr = bool(re.search(r"bitplane|Creator\s*=\s*\"Fusion", desc, re.I))
         colors = []
         for c in range(self.nc):

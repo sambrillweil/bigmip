@@ -48,7 +48,7 @@ def test_ims_cli_outputs(tmp_path):
     assert abs(px - 0.25) < 1e-6 and md["unit"] == "micron"
     assert md["Labels"][0] == "405_ch | thing0 (dye0)"            # notes label the channels
     assert "melanopsin" in md["Info"] and (out / "s_histology.toml").exists()
-    assert tuple(md["LUTs"][2][:, -1]) == (255, 0, 0)            # file colour kept (channel 3 red)
+    assert tuple(md["LUTs"][2][:, -1]) == (255, 0, 0)            # file color kept (channel 3 red)
     small, _, px2 = _read_composite(str(out / "s_MIP_x2smaller.tif"))
     assert small.shape[1:] == (vol.shape[2] // 2, vol.shape[3] // 2) and abs(px2 - 0.5) < 1e-6
     assert (out / "s_MIP_RGB.tif").exists() and (out / "s_MIP_preview.png").exists()
@@ -116,33 +116,38 @@ def test_metadata_report(tmp_path):
     write_ims(p, vol)
     s, written = write_report(p, str(tmp_path / "meta"))
     assert s["image"]["size (X x Y x Z)"] == "520 x 300 x 7"
-    assert s["channels"][1]["colour"] == "#00ff00" and s["channels"][0]["display range"] == "90 - 3100"
+    assert s["channels"][1]["color"] == "#00ff00" and s["channels"][0]["display range"] == "90 - 3100"
     md = open(written[0], encoding="utf-8").read()
     assert "## Channels" in md and "405_ch" in md
 
 
-def test_notes_required_and_checked(tmp_path):
-    from bigmip.notes import check, load, main as notes_main
+def test_notes_optional_and_checked(tmp_path, capsys):
+    from bigmip.notes import check, completeness, load, main as notes_main
     vol = synthetic_volume()
     p = str(tmp_path / "s.ims")
     write_ims(p, vol)
-    with pytest.raises(SystemExit):                                  # no notes -> refuses, with instructions
-        main([p, "-o", str(tmp_path / "o"), "--workers", "1"])
+    chans = ["405_ch", "488_ch", "561_ch"]
+    main([p, "-o", str(tmp_path / "o"), "--workers", "1", "--no-preview"])     # no notes: the MIP is made anyway
+    assert "WARNING: no histology notes" in capsys.readouterr().out          # ... but flagged
+    arr, md, _ = _read_composite(str(tmp_path / "o" / "s_MIP.tif"))
+    assert list(md["Labels"]) == chans and not (tmp_path / "o" / "s_histology.toml").exists()
     notes_main([p, "--text", "--no-open"])                           # creates the blank form
     form = tmp_path / "s_histology.toml"
     d = load(str(form))
-    assert [c["image_channel"] for c in d["channels"]] == ["405_ch", "488_ch", "561_ch"]
-    errors, _ = check(d, ["405_ch", "488_ch", "561_ch"])
-    assert any("sample_id" in e for e in errors) and any("dilution" in e for e in errors)
-    with pytest.raises(SystemExit):                                  # incomplete -> refuses
-        main([p, "-o", str(tmp_path / "o"), "--workers", "1"])
-    write_notes(str(form), ["405_ch", "488_ch", "561_ch"], primary_incubation__duration="four")
-    errors, _ = check(load(str(form)), ["405_ch", "488_ch", "561_ch"])
-    assert errors == ["Primary incubation: 'duration' = 'four' -- expected a time with units, e.g. 10 min, 2 h, "
-                      "3 nights, overnight"]
-    write_notes(str(form), ["405_ch", "488_ch", "561_ch"])
-    assert check(load(str(form)), ["405_ch", "488_ch", "561_ch"])[0] == []
-    notes_main([p, "--check"])                                       # complete -> no exit
+    assert [c["image_channel"] for c in d["channels"]] == chans
+    assert check(d, chans) == ([], [])                               # empty fields are fine: nothing is required
+    assert completeness(d) == ("none", "histology notes empty")      # but an empty record is flagged
+    main([p, "-o", str(tmp_path / "o1"), "--workers", "1", "--no-preview"])
+    assert "WARNING: histology notes empty" in capsys.readouterr().out
+    write_notes(str(form), chans, primary_incubation__duration="four")
+    issues, sugg = check(load(str(form)), chans)
+    assert issues == ["Primary incubation: duration 'four' -- expected a time with units, e.g. 10 min, 2 h, "
+                      "3 nights, overnight"] and sugg == []
+    main([p, "-o", str(tmp_path / "o2"), "--workers", "1", "--no-preview"])    # an odd entry never blocks a MIP
+    assert (tmp_path / "o2" / "s_histology.toml").exists()
+    write_notes(str(form), chans)
+    assert check(load(str(form)), chans) == ([], [])
+    notes_main([p, "--check"])
     # --from copies the protocol but clears the animal and dates
     p2 = str(tmp_path / "t.ims")
     write_ims(p2, vol)
@@ -150,6 +155,116 @@ def test_notes_required_and_checked(tmp_path):
     d2 = load(str(tmp_path / "t_histology.toml"))
     assert d2["primary_antibodies"][0]["dilution"] == "1:10000" and d2["sample"]["sample_id"] == ""
     assert d2["dates"]["staining_started"] == "" and d2["channels"][0]["shows"] == "thing0"
+
+
+def test_notes_dates_formats_and_smart_options(tmp_path):
+    from make_test_data import FILLED_NOTES
+    from bigmip.notes import (check, completeness, fluorophore_for, load, normalize_date, save,
+                              secondary_target_options, shows_options)
+    assert normalize_date("10/12/26") == "2026-10-12" == normalize_date("10/12/2026")      # US month/day/year
+    assert normalize_date("2026/10/12") == "2026-10-12" == normalize_date("2026-10-12")
+    assert normalize_date("13/40/26") == "13/40/26" and normalize_date("last week") == "last week"
+    f = str(tmp_path / "a_histology.toml")
+    save(f, {"dates": {"staining_started": "10/12/26", "imaged": "10/21/2026"}})
+    assert load(f)["dates"] == dict(load(f)["dates"], staining_started="2026-10-12", imaged="2026-10-21")
+    d = {"dates": {"imaged": "10/21/26"}, "fixation": {"duration": "monday - friday"},
+         "other_stains": [{"stain": "hoechst", "dilution": ".005mg/ml", "duration": "5min"}],
+         "blocking": {"duration": "1h", "temperature": "rt"}}
+    assert check(d) == ([], [])                                       # unusual-looking but valid entries
+    # completeness: 'largely missing' = < 25% of fields or 3+ of the 5 core items empty
+    assert completeness(d)[0] == "sparse"                             # no sample, primaries or channels
+    assert completeness({"sample": {"sample_id": "ID1"}, "notes": {"text": ""}}) == (
+        "sparse", "histology notes largely missing: 1 of 54 fields filled in; nothing yet on dates, primary "
+                  "antibodies, secondary antibodies or stains, what each image channel shows")
+    full = dict(FILLED_NOTES, channels=[{"image_channel": "a", "shows": "melanopsin"}])
+    assert completeness(full)[0] == "ok" and "nothing yet" not in completeness(full)[1]
+    full["channels"] = [{"image_channel": "a", "shows": ""}]
+    assert completeness(full)[0] == "ok" and completeness(full)[1].endswith("nothing yet on what each image "
+                                                                            "channel shows")
+    assert check({"other_stains": [{"dilution": "1/500"}]})[0]        # 1/500 is not a dilution format
+    # drop-downs and auto-filled fluorophores, from what was typed on the other tabs (aliases: gp = guinea pig)
+    d = dict(FILLED_NOTES, primary_antibodies=[
+        {"target": "melanopsin", "host": "chicken"}, {"target": "beta3-tubulin", "host": "guinea pig"}],
+        secondary_antibodies=[{"target": "chicken", "fluorophore": "Alexa 647"},
+                              {"target": "anti-gp", "fluorophore": "Alexa 488"},
+                              {"target": "RFP", "host": "alpaca", "fluorophore": "Alexa 594"}])
+    assert secondary_target_options(d)[:2] == ["anti-chicken", "anti-guinea pig"]
+    assert shows_options(d)[:4] == ["melanopsin", "beta3-tubulin", "RFP", "nuclei (Hoechst 33342)"]
+    assert fluorophore_for(d, "melanopsin") == "Alexa 647" and fluorophore_for(d, "beta3-tubulin") == "Alexa 488"
+    assert fluorophore_for(d, "RFP") == "Alexa 594" and fluorophore_for(d, "nuclei (Hoechst 33342)") == "Hoechst 33342"
+    assert check(d) == ([], [])
+    # a secondary against a host no primary has is pointed out (e.g. anti-guinea pig with a goat primary)
+    d["primary_antibodies"][1]["host"] = "goat"
+    d["secondary_antibodies"][1].update(target="gp", host="chicken")
+    assert check(d)[1] == ["Secondary #2 binds 'guinea pig', but no primary antibody has that host "
+                           "(primary hosts: chicken, goat)"]
+    assert fluorophore_for(d, "beta3-tubulin") == ""                  # no matching secondary: left for the user
+
+
+@pytest.fixture(scope="module")
+def _tk():
+    import tkinter as tk
+    try:
+        root = tk.Tk()
+    except tk.TclError as e:
+        pytest.skip(f"no display ({e})")
+    root.withdraw()
+    yield root
+    root.destroy()
+
+
+@pytest.fixture
+def tk_root(_tk):
+    """One hidden window shared by the window tests (a 2nd Tk interpreter in the same run can fail to load ttk)."""
+    yield _tk
+    for w in _tk.winfo_children():
+        w.destroy()
+
+
+def test_notes_form_window(tmp_path, tk_root):
+    from make_test_data import FILLED_NOTES
+    from bigmip.notes import load, save
+    from bigmip.notes_gui import NotesForm
+    f = str(tmp_path / "s_histology.toml")
+    chans = ["405_ch", "488_ch", "561_ch"]
+    d = dict(FILLED_NOTES, dates={"staining_started": "10/12/26"},
+             channels=[{"image_channel": "561_ch", "shows": "melanopsin"}])
+    save(f, d)
+    form = NotesForm(tk_root, str(tmp_path / "s.ims"), f, chans)      # cards with drop-downs fed by other cards
+    got = form.collect()
+    assert got["secondary_antibodies"][0]["target"] == "anti-chicken" and got["dates"]["staining_started"] == \
+        "2026-10-12"
+    assert [c["image_channel"] for c in got["channels"]] == chans
+    form._auto_fluor(2)                                                # melanopsin -> the anti-chicken secondary
+    assert form.vars[("channels", 2, "fluorophore")].get() == "Alexa 647"
+    form.vars[("primary_incubation", None, "duration")].set("four")
+    assert form.labels[("primary_incubation", None, "duration")].cget("style") == "Odd.TLabel"
+    assert "1 thing(s) to look at" in form.status.cget("text") and form.dirty
+    form.add_item("secondary_antibodies", {"target": "RFP", "host": "alpaca", "fluorophore": "Alexa 594"})
+    form.vars[("dates", None, "imaged")].set("10/21/26")
+    assert form.save() and not form.dirty
+    saved = load(f)
+    assert saved["dates"]["imaged"] == "2026-10-21" and saved["secondary_antibodies"][1]["target"] == "RFP"
+    assert saved["channels"][2]["fluorophore"] == "Alexa 647" and saved["primary_incubation"]["duration"] == "four"
+
+
+def test_app_notes_optional(tmp_path, tk_root):
+    from bigmip.gui import App
+    vol = synthetic_volume()
+    p = str(tmp_path / "s.ims")
+    write_ims(p, vol)
+    app = App(tk_root, p)
+    assert app.badge.cget("text").startswith("Histology notes: none yet. Optional, but the MIP will carry no")
+    assert "--skip-notes" not in app.mip_args()
+    app.notes_var.set(False)
+    assert app.mip_args()[-1] == "--skip-notes"
+    write_notes(str(tmp_path / "s_histology.toml"), ["405_ch", "488_ch", "561_ch"],
+                primary_incubation__duration="four")
+    app.set_image(p)
+    assert app.badge.cget("text").endswith("fields filled in; 1 thing(s) to look at (tab 1, Check)")
+    (tmp_path / "s_histology.toml").write_text('[sample]\nsample_id = ID1\n', encoding="utf-8")
+    app.set_image(p)                                                   # a broken notes file does not stop the app
+    assert app.notes_form is None and "could not be read" in app.badge.cget("text")
 
 
 def test_unquoted_value_gives_clear_error(tmp_path):
@@ -192,3 +307,26 @@ def test_rename_and_undo(tmp_path):
     finally:
         builtins.input = orig
     assert os.path.exists(p) and (out / "ID1_25X_s_MIP.tif").exists()
+
+
+def test_rename_reports_problems(tmp_path, monkeypatch):
+    from bigmip.rename import do_rename, plan_rename
+    p = tmp_path / "a.ims"
+    p.write_bytes(b"x")
+    (tmp_path / "a_metadata.md").write_text("a.ims", encoding="utf-8")
+    (tmp_path / "b.ims").write_bytes(b"y")
+    plan, old = plan_rename(str(p), "b")
+    done, error = do_rename(plan, old, "b", assume_yes=True)          # new name taken: nothing renamed, explained
+    assert done == [] and "already exist" in error and p.exists()
+    real = os.rename
+
+    def busy(o, n):                                                    # 2nd file open in another program
+        if o.endswith(".md"):
+            raise PermissionError(13, "The process cannot access the file because it is being used by another "
+                                      "process")
+        real(o, n)
+    monkeypatch.setattr(os, "rename", busy)
+    plan, old = plan_rename(str(p), "c")
+    done, error = do_rename(plan, old, "c", assume_yes=True)
+    assert len(done) == 1 and (tmp_path / "c.ims").exists()
+    assert "open in another program" in error and "Undo puts them back" in error

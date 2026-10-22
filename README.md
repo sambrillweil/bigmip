@@ -1,7 +1,7 @@
 # bigmip
 
 Turn a very large 3-D microscopy stack into a **maximum-intensity projection (MIP)** that keeps the **pixel size
-(scale)**, the **channel names** and the **channel colours**. The result is a TIFF that **Fiji** opens as a coloured
+(scale)**, the **channel names** and the **channel colors**. The result is a TIFF that **Fiji** opens as a colored
 multi-channel image with the right scale. Your original file is only ever read, never changed.
 
 bigmip is built for files too big to open normally: a 100–200 GB stitched spinning-disk stack is projected while only
@@ -9,7 +9,7 @@ a few blocks are held in memory at a time.
 
 It also keeps your records together:
 - **Histology notes:** a form for the staining details (animal, dates, antibodies, dilutions, incubations, washes,
-  mounting, what each channel shows). It is required before a MIP is made, and it travels with every output.
+  mounting, what each channel shows). Every field is optional, and the notes travel with every output.
 - **Metadata report:** a readable summary of what the microscope recorded in an Imaris `.ims` file (channels,
   exposure, laser power, objective, camera, Z-step, ...).
 - **Rename:** rename an image and every file made from it in one step, e.g. when the file name has the wrong
@@ -78,16 +78,32 @@ py -m pip install .
 On a Mac, the first time, right-click it and choose Open. Or type `py -m bigmip.gui` in a terminal.
 
 At the top, click **Choose...** and pick your `.ims` or `.tif` file. bigmip shows the image size, pixel size, plane
-step and channels, and whether its histology notes are complete. Then work through the four tabs.
+step and channels, and how much of its histology notes is filled in. Then work through the four tabs.
 
 ### Tab 1: Histology notes
 ![Histology notes](docs/app_notes.png)
 
-Fill in the staining details. Bold fields are required, and anything still missing or in the wrong form is red.
+Fill in what you know about the staining. **Every field is optional**: nothing stops you from saving or making a MIP.
+But a missing or mostly empty record is **flagged**: the line under the image name turns red (no notes) or orange
+(largely missing = under a quarter of the fields filled in, or nothing at all on 3 of these 5: the sample, dates,
+primary antibodies, secondary antibodies or stains, what each image channel shows), it names what is still empty,
+and **Make MIP** asks whether to go ahead anyway. The command line prints the same as a `WARNING` line.
+
+An entry that looks unusual (e.g. a time without units, or a secondary antibody against a species none of your
+primaries come from) turns **orange** as a hint; **Check** lists them all.
 - Pick common answers from the drop-downs, or type your own.
-- The **Today** buttons fill in dates.
-- **+ Add primary antibody** (and similar buttons) add more antibodies or stains.
-- On the **Channels** tab, say what each image channel shows (e.g. 638_Cy5 → melanopsin, Alexa 647).
+- **Pick date** opens a calendar. Typed dates like `10/12/26` (month/day/year) are saved as `2026-10-12`.
+- Every step (fixation, blocking, incubations, washes, mounting) and every antibody or stain has its own **notes**
+  field for anything the other fields don't cover.
+- **+ Add primary antibody** (and similar buttons) add more antibodies. Nuclear and other stains (e.g. Hoechst) are on
+  the **Secondary antibodies & stains** tab.
+- The drop-downs learn from the other tabs: a secondary's **target** offers `anti-<host>` for each primary's host
+  (`anti-chicken`, ...). Common abbreviations are understood: `gp` = guinea pig, `rb` = rabbit, `ck`/`chk` = chicken.
+- On the **Channels** tab, **shows** offers your primary targets, nanobody targets (e.g. RFP) and stains. Picking one
+  fills in the **fluorophore** from the matching secondary (melanopsin made in chicken → the anti-chicken secondary's
+  Alexa 647), when that match is unambiguous.
+
+  ![Channels: what each one shows](docs/app_notes_channels.png)
 - **Copy protocol from...** loads an earlier sample's notes (protocol, antibodies, channels), so a repeat staining
   only needs the animal and dates changed.
 - Click **Save notes**.
@@ -95,19 +111,19 @@ Fill in the staining details. Bold fields are required, and anything still missi
 The notes are saved as `NAME_histology.toml` next to the image. It's a plain text file and can be opened in any
 editor. A `histology.toml` in a folder applies to every image in that folder that has no notes of its own.
 
-**Notes are required:** bigmip asks for them before making a MIP. You can still go ahead without them for a quick look.
-
 ### Tab 2: Make MIP
 - **Resolution:** `.ims` files contain smaller copies of the data. "1/4 size" is a quick test that takes seconds.
 - **Planes:** project only some planes, e.g. to skip a bright surface layer.
 - **Channels:** untick a channel to leave it out.
-  - Click the colour box to change a channel's colour.
+  - Click the color box to change a channel's color.
   - Choose the contrast: as stored in the file, automatic, or your own low/high values. Contrast only sets how Fiji
     first displays the image; pixel values are never changed.
 - **Outputs:**
   - smaller copies (2×, 4×, 8× smaller; each keeps the brightest pixel of every block, so thin processes survive);
-  - a flattened colour picture for slides, with an optional scale bar;
-  - a small preview.
+  - a flattened color picture for slides, with an optional scale bar;
+  - a small preview;
+  - **Include the histology notes** (on by default, when the image has notes): channel names like
+    `638_Cy5 | melanopsin (Alexa 647)` in Fiji, the notes inside the TIFF, and a copy of the notes file.
 - Click **Make MIP**. A progress bar shows % done and time left, and the log shows each step.
 - **Open MIP in Fiji** opens the result. The first time, point bigmip to Fiji with **Choose Fiji...**.
 
@@ -117,7 +133,7 @@ to repeat the run later or on another computer.
 ### Tab 3: Metadata report
 For `.ims` files: **Make metadata report** writes a readable summary next to the image and shows it. It covers:
 - size, pixel size, Z-step and dates;
-- each channel's colour, excitation/emission, **exposure, laser line and power, camera gain/bit depth, readout**;
+- each channel's color, excitation/emission, **exposure, laser line and power, camera gain/bit depth, readout**;
 - objective and camera;
 - the Z scan;
 - the histology notes.
@@ -142,6 +158,10 @@ The old name is also updated inside the notes and the report. The notes keep a r
 is logged in `rename_log.csv` next to the image, and **Undo last rename** reverses the last rename. The image data is
 never changed, only file names.
 
+A file can't be renamed while another program has it open (Fiji, Imaris, a MIP that is still running, or Google
+Drive still uploading it). bigmip then says which file and stops; close it and click **Rename** again (or **Undo
+last rename** to put back what was already renamed).
+
 ---
 
 ## 3. What it reads and writes
@@ -156,9 +176,9 @@ overwritten: if a file already exists, a new one is written with `_2`, `_3`, ...
 
 | File | What it is |
 |---|---|
-| `NAME_MIP.tif` | The projection: all channels, full resolution, original pixel values (16-bit stays 16-bit), with colours, names, contrast, scale and the histology notes. **Use this one for analysis and figures.** In Fiji, channel names read like `638_Cy5 | melanopsin (Alexa 647)`, and **Image › Show Info** shows the notes. |
+| `NAME_MIP.tif` | The projection: all channels, full resolution, original pixel values (16-bit stays 16-bit), with colors, names, contrast, scale and the histology notes. **Use this one for analysis and figures.** In Fiji, channel names read like `638_Cy5 | melanopsin (Alexa 647)`, and **Image › Show Info** shows the notes. |
 | `NAME_MIP_x4smaller.tif` | The same, 4× smaller (brightest pixel of each 4×4 block). Opens instantly. |
-| `NAME_MIP_RGB.tif` / `.png` | One flattened colour picture (8-bit) for slides, optionally with a scale bar. |
+| `NAME_MIP_RGB.tif` / `.png` | One flattened color picture (8-bit) for slides, optionally with a scale bar. |
 | `NAME_MIP_preview.png` | A small picture for a quick look. |
 | `NAME_histology.toml` | A copy of the notes the MIP was made with. |
 
@@ -173,7 +193,7 @@ quotes. On Windows, Shift + right-click a file and choose "Copy as path".
 |---|---|
 | `py -m bigmip FILE --info` | Show what's in the file (instant). |
 | `py -m bigmip FILE` | Make the MIP. |
-| `py -m bigmip.notes FILE` | Open the notes form for FILE. `--check` lists what's missing; `--show` prints the notes; `--text` uses a plain-text form instead of the window. |
+| `py -m bigmip.notes FILE` | Open the notes form for FILE. `--check` lists entries that look unusual; `--show` prints the notes; `--text` uses a plain-text form instead of the window. |
 | `py -m bigmip.metadata FILE` | Make the metadata report (.ims). |
 | `py -m bigmip.rename FILE NEW_NAME` | Rename FILE and everything made from it. Or `--replace 25X 63X` (wildcards allowed, e.g. `"D:\data\*25X*.ims"`), and `--undo` to reverse. |
 | `py -m bigmip.gui [FILE]` | Open the app. |
@@ -186,14 +206,14 @@ Options for `py -m bigmip FILE` (`py -m bigmip --help` lists them all):
 | `--level N` | `.ims` only: use a smaller copy of the data (1 = half size, 2 = quarter, ...). | `--level 2` |
 | `--z FIRST LAST` | Project only planes FIRST to LAST (counting from 1). | `--z 5 30` |
 | `--channels LIST` | Keep only some channels (counting from 1). | `--channels 1,3,4` |
-| `--colors LIST` | Change colours: a list in channel order, or by channel number / start of the name. Names: `red green blue cyan magenta yellow orange gray`, or hex `#ff8000`. | `--colors "405=cyan,638=magenta"` |
+| `--colors LIST` | Change colors: a list in channel order, or by channel number / start of the name. Names: `red green blue cyan magenta yellow orange gray`, or hex `#ff8000`. | `--colors "405=cyan,638=magenta"` |
 | `--ranges LIST` | Contrast per channel: `auto` or `LOW-HIGH`. | `--ranges "auto,100-800,auto"` |
 | `--auto-ranges` | Ignore the contrast stored in the file. | |
 | `--downsample K ...` | Also write smaller copies. | `--downsample 2 4` |
-| `--rgb` | Also write the flattened colour picture. | |
+| `--rgb` | Also write the flattened color picture. | |
 | `--scalebar UM` | Scale bar of UM microns on the pictures. | `--scalebar 100` |
 | `--gamma LIST` | Per-channel gamma for the pictures (below 1 brightens dim structures). | `--gamma 1,1,0.7` |
-| `--notes FILE` / `--skip-notes` | Use this notes file / make the MIP without notes. | |
+| `--notes FILE` / `--skip-notes` | Use this notes file / leave the notes out of the outputs (notes are optional either way). | |
 | `--workers N` | `.ims` only: parallel processes (default up to 8). Fewer if memory is short. | `--workers 4` |
 
 In a terminal, a status bar shows % done, the current channel and the time left, and each step is printed with a
@@ -203,12 +223,12 @@ timestamp.
 
 ## 5. Looking at the results in Fiji
 
-1. Drag `NAME_MIP.tif` onto the Fiji window (or **File › Open**). It opens as a coloured composite with one channel
-   per colour and the scale in µm.
+1. Drag `NAME_MIP.tif` onto the Fiji window (or **File › Open**). It opens as a colored composite with one channel
+   per color and the scale in µm.
 2. **Turn channels on and off:** **Image › Color › Channels Tool...**
 3. **Contrast per channel:** **Image › Adjust › Brightness/Contrast...** (Ctrl+Shift+C). Use the channel slider
    under the image to pick a channel.
-4. **Change a channel's colour:** pick the channel with the slider, then **Image › Lookup Tables**.
+4. **Change a channel's color:** pick the channel with the slider, then **Image › Lookup Tables**.
 5. **Histology notes:** **Image › Show Info...**
 6. **Check the scale:** **Image › Properties...**
 7. **Scale bar:** **Analyze › Tools › Scale Bar...**
@@ -248,7 +268,7 @@ It opens directly, with no conversion.
 | **F1** | List of all shortcuts |
 
 ### Several channels at once
-- **S** opens **Brightness & Color**. Set min/max per channel, and click a channel's colour to change it.
+- **S** opens **Brightness & Color**. Set min/max per channel, and click a channel's color to change it.
   BigDataViewer may start with every channel white.
 - **F6** opens **Visibility & Grouping**.
   - Tick **"enable fused mode"** (or press **F**) to see several channels together. With it off, only the "current"
@@ -269,7 +289,7 @@ It opens directly, with no conversion.
 | An error about `imagecodecs` with a TIFF | The TIFF is compressed: `py -m pip install imagecodecs` |
 | Very slow | The file is probably on a network or cloud drive (Google Drive, a server). Copy it to a local disk, or test first at a smaller resolution. |
 | The computer runs out of memory | Use fewer parallel workers. The MIP itself needs about width × height × channels × 2 bytes of memory, e.g. ~3.5 GB for a 22,000 × 21,000 × 4-channel image. |
-| Colours look wrong | Change them in the Make MIP tab (or `--colors`). |
+| Colors look wrong | Change them in the Make MIP tab (or `--colors`). |
 | A bright surface layer hides everything | Project fewer planes. |
 | Notes: "Could not read ..." | In the text file, every answer must be in quotes: `dilution = "1:500"`. Or edit the notes in the app instead. |
 | Fiji shows the image black or white | Image › Adjust › Brightness/Contrast › **Reset**, per channel. |
@@ -284,14 +304,15 @@ It opens directly, with no conversion.
 - **TIFFs** are read one plane at a time.
 - **Scale** comes from the file (Imaris: image extents ÷ pixel count; OME-TIFF: `PhysicalSizeX/Y/Z`; ImageJ TIFF:
   resolution tags). It is written as ImageJ calibration in µm.
-- **Colours** come from the file: Imaris channel `Color`, OME `Channel Color` (Andor Fusion writes these in BGR
-  order, which is detected), or ImageJ LUTs. A channel with no colour gets one guessed from the wavelength in its
-  name. Colours are written as ImageJ LUTs, so Fiji shows them automatically.
+- **Colors** come from the file: Imaris channel `Color`, OME `Channel Color` (Andor Fusion writes these in BGR
+  order, which is detected), or ImageJ LUTs. A channel with no color gets one guessed from the wavelength in its
+  name. Colors are written as ImageJ LUTs, so Fiji shows them automatically.
 - **Contrast** comes from the file when stored (Imaris `ColorRange`). Otherwise it's the 0.5th–99.9th percentile of
   the non-zero pixels; zero is excluded because stitched data are zero outside the imaged tiles. It never changes
   pixel values.
-- **Histology notes** are a TOML text file, read with Python's built-in `tomllib`. They're checked for required
-  fields and formats: dilutions (`1:500` or `2 ug/mL`), times with units, temperatures, and `YYYY-MM-DD` dates.
+- **Histology notes** are a TOML text file, read with Python's built-in `tomllib`. Nothing in them is required. Filled-in
+  entries are checked for their form only (dilutions `1:500` or `2 ug/mL`, times with units, temperatures,
+  `YYYY-MM-DD` dates; `M/D/YY` is converted on saving) and secondaries are matched to primaries by host species.
 - **The app** (Tk, built into Python) runs the same commands in the background and shows their output.
 
 | File | Contents |
@@ -299,7 +320,7 @@ It opens directly, with no conversion.
 | `bigmip/readers.py` | reading .ims / TIFF |
 | `bigmip/cli.py` | the MIP command |
 | `bigmip/output.py` | writing files |
-| `bigmip/colors.py` | colours |
+| `bigmip/colors.py` | colors |
 | `bigmip/notes.py`, `notes_gui.py` | the histology notes |
 | `bigmip/metadata.py` | the metadata report |
 | `bigmip/rename.py` | renaming |
@@ -310,7 +331,7 @@ It opens directly, with no conversion.
 py -m pip install pytest
 py -m pytest -q
 ```
-The tests build small synthetic `.ims` and OME-TIFF files and check that projections, scale, names, colours, notes,
+The tests build small synthetic `.ims` and OME-TIFF files and check that projections, scale, names, colors, notes,
 reports and renaming come out exactly right.
 
 ## License

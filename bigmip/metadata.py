@@ -114,7 +114,7 @@ def summarize(md):
     while f"Channel {i}" in g:
         c = g[f"Channel {i}"]
         s["channels"].append({
-            "#": str(i + 1), "name": c.get("Name", ""), "colour": _hex(c.get("Color")),
+            "#": str(i + 1), "name": c.get("Name", ""), "color": _hex(c.get("Color")),
             "display range": " - ".join(f"{v:g}" for v in map(float, re.findall(r"[-+0-9.eE]+",
                                                                                 c.get("ColorRange", ""))[:2])),
             "gamma": c.get("GammaCorrection", ""),
@@ -285,7 +285,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="bigmip-meta", description="Readable metadata report for an Imaris .ims file.")
     ap.add_argument("file")
     ap.add_argument("-o", "--outdir", help="output folder (default: next to the file)")
-    ap.add_argument("--notes", help="histology notes file (default: NAME_histology.yaml or histology.yaml next to it)")
+    ap.add_argument("--notes", help="histology notes file (default: NAME_histology.toml or histology.toml next to it)")
     a = ap.parse_args(argv)
     if not a.file.lower().endswith(".ims"):
         raise SystemExit("bigmip-meta reads .ims files (for TIFFs, 'bigmip FILE --info' prints the basics)")

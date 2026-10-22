@@ -1,17 +1,18 @@
-"""A form window for the histology notes (built-in Tk; nothing extra to install).
+"""The histology-notes form (built-in Tk; nothing extra to install). Used inside the bigmip app (tab 1), or on its
+own:  bigmip-notes IMAGE.  It reads and writes the same <name>_histology.toml file as the text form.
 
-  bigmip-notes IMAGE          opens this window for IMAGE's notes (creates them if needed)
-  bigmip-notes                asks which image first
-
-It reads and writes the same <name>_histology.toml file as the text form, so both can be used interchangeably.
+Every field is optional. Entries that look unusual (e.g. a time without units) are marked orange as a hint only.
 """
+import calendar
 import datetime
 import os
 import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from .notes import SECTIONS, check, find_notes, load, notes_path_for, render
+from .notes import (DATE_FIELDS, SECTIONS, carry_channels, check, completeness, find_notes, fluorophore_for,
+                    fluorophore_options, load, normalize_date, notes_path_for, save, secondary_target_options,
+                    shows_options)
 
 SUGGEST = {
     "species": ["mouse", "rat", "macaque", "marmoset", "human", "zebrafish"],
@@ -34,16 +35,36 @@ SUGGEST = {
     "coverslip": ["#1.5", "#1.5H"],
     "protected_from_light": ["yes", "no"],
 }
-DATE_FIELDS = {"tissue_collected", "staining_started", "staining_finished", "imaged"}
 TABS = [("Sample & dates", ["sample", "dates"]),
         ("Fixation & blocking", ["fixation", "blocking"]),
         ("Primary antibodies", ["primary_antibodies", "primary_incubation", "washes_after_primary"]),
-        ("Secondary antibodies", ["secondary_antibodies", "secondary_incubation", "washes_after_secondary"]),
-        ("Other stains & mounting", ["other_stains", "mounting"]),
+        ("Secondary antibodies & stains", ["secondary_antibodies", "secondary_incubation", "washes_after_secondary",
+                                           "other_stains"]),
+        ("Mounting", ["mounting"]),
         ("Channels", ["channels"]),
         ("Notes", ["notes"])]
 SPEC = {k: (label, kind, fields) for k, label, kind, fields in SECTIONS}
-RED, GREY, ACCENT = "#c62828", "#6b6b6b", "#1f5fa8"
+NOUN = {"primary_antibodies": "Primary antibody", "secondary_antibodies": "Secondary antibody / nanobody",
+        "other_stains": "Stain", "channels": "Channel"}
+RED, GRAY, ACCENT, ORANGE, GREEN = "#c62828", "#6b6b6b", "#1f5fa8", "#d17a00", "#2e7d32"
+
+
+def apply_style(root):
+    """Shared look for every bigmip window."""
+    st = ttk.Style(root)
+    for theme in ("vista", "aqua", "clam"):
+        if theme in st.theme_names():
+            st.theme_use(theme)
+            break
+    st.configure("Head.TLabel", font=("Segoe UI", 15, "bold"))
+    st.configure("Sub.TLabel", foreground=GRAY)
+    st.configure("Section.TLabelframe.Label", font=("Segoe UI", 11, "bold"), foreground=ACCENT)
+    st.configure("Field.TLabel", font=("Segoe UI", 10))
+    st.configure("Odd.TLabel", font=("Segoe UI", 10, "bold"), foreground=ORANGE)
+    st.configure("Hint.TLabel", foreground=GRAY, font=("Segoe UI", 9))
+    st.configure("TNotebook.Tab", padding=(12, 6), font=("Segoe UI", 10))
+    st.configure("Big.TButton", font=("Segoe UI", 11, "bold"), padding=(14, 6))
+    return st
 
 
 class ScrollFrame(ttk.Frame):
@@ -67,23 +88,75 @@ class ScrollFrame(ttk.Frame):
         self.canvas.yview_scroll(int(-e.delta / 120) or (-1 if e.delta > 0 else 1), "units")
 
 
-def apply_style(root):
-    """Shared look for every bigmip window."""
-    st = ttk.Style(root)
-    for theme in ("vista", "aqua", "clam"):
-        if theme in st.theme_names():
-            st.theme_use(theme)
-            break
-    st.configure("Head.TLabel", font=("Segoe UI", 15, "bold"))
-    st.configure("Sub.TLabel", foreground=GREY)
-    st.configure("Section.TLabelframe.Label", font=("Segoe UI", 11, "bold"), foreground=ACCENT)
-    st.configure("Req.TLabel", font=("Segoe UI", 10, "bold"))
-    st.configure("Opt.TLabel", font=("Segoe UI", 10))
-    st.configure("Bad.TLabel", font=("Segoe UI", 10, "bold"), foreground=RED)
-    st.configure("Hint.TLabel", foreground=GREY, font=("Segoe UI", 9))
-    st.configure("TNotebook.Tab", padding=(12, 6), font=("Segoe UI", 10))
-    st.configure("Big.TButton", font=("Segoe UI", 11, "bold"), padding=(14, 6))
-    return st
+class DatePicker(tk.Toplevel):
+    """A small month calendar under a date field; click a day to fill in YYYY-MM-DD."""
+
+    def __init__(self, anchor, var):
+        super().__init__(anchor)
+        self.var = var
+        self.overrideredirect(True)
+        self.attributes("-topmost", True)            # a popup: never hidden behind the window it belongs to
+        self.configure(background="#ffffff", highlightthickness=1, highlightbackground="#9a9a9a")
+        cur = normalize_date(var.get())
+        try:
+            d = datetime.date.fromisoformat(cur)
+        except ValueError:
+            d = datetime.date.today()
+        self.y, self.m, self.sel = d.year, d.month, d
+        self.body = tk.Frame(self, background="#ffffff", padx=6, pady=6)
+        self.body.pack()
+        self.draw()
+        self.geometry(f"+{anchor.winfo_rootx()}+{anchor.winfo_rooty() + anchor.winfo_height()}")
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<FocusOut>", lambda e: self.after(150, self._maybe_close))
+        self.focus_force()
+
+    def _maybe_close(self):
+        try:
+            if self.focus_get() is None or not str(self.focus_get()).startswith(str(self)):
+                self.destroy()
+        except (tk.TclError, KeyError):
+            pass
+
+    def draw(self):
+        for w in self.body.winfo_children():
+            w.destroy()
+        top = tk.Frame(self.body, background="#ffffff")
+        top.grid(row=0, column=0, columnspan=7, sticky="ew", pady=(0, 4))
+        btn = dict(relief="flat", background="#ffffff", activebackground="#e6eef8", font=("Segoe UI", 10), bd=0)
+        tk.Button(top, text="<<", command=lambda: self.shift(-12), **btn).pack(side="left")
+        tk.Button(top, text="<", command=lambda: self.shift(-1), **btn).pack(side="left")
+        tk.Label(top, text=f"{calendar.month_name[self.m]} {self.y}", background="#ffffff",
+                 font=("Segoe UI", 10, "bold"), width=16).pack(side="left", expand=True)
+        tk.Button(top, text=">", command=lambda: self.shift(1), **btn).pack(side="left")
+        tk.Button(top, text=">>", command=lambda: self.shift(12), **btn).pack(side="left")
+        for i, wd in enumerate(["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]):
+            tk.Label(self.body, text=wd, background="#ffffff", foreground=GRAY, font=("Segoe UI", 9)).grid(
+                row=1, column=i, padx=1)
+        today = datetime.date.today()
+        for r, week in enumerate(calendar.Calendar().monthdayscalendar(self.y, self.m), start=2):
+            for c, day in enumerate(week):
+                if not day:
+                    continue
+                d = datetime.date(self.y, self.m, day)
+                bg = "#1f5fa8" if d == self.sel else ("#e6eef8" if d == today else "#ffffff")
+                fg = "#ffffff" if d == self.sel else "#000000"
+                tk.Button(self.body, text=str(day), width=3, relief="flat", background=bg, foreground=fg,
+                          activebackground="#cfe0f5", font=("Segoe UI", 9),
+                          command=lambda d=d: self.pick(d)).grid(row=r, column=c, padx=1, pady=1)
+        tk.Button(self.body, text="Today", command=lambda: self.pick(today), relief="flat", background="#f0f0f0",
+                  font=("Segoe UI", 9)).grid(row=9, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        tk.Button(self.body, text="Clear", command=lambda: self.pick(None), relief="flat", background="#f0f0f0",
+                  font=("Segoe UI", 9)).grid(row=9, column=4, columnspan=3, sticky="e", pady=(4, 0))
+
+    def shift(self, months):
+        k = self.y * 12 + self.m - 1 + months
+        self.y, self.m = k // 12, k % 12 + 1
+        self.draw()
+
+    def pick(self, d):
+        self.var.set(d.isoformat() if d else "")
+        self.destroy()
 
 
 class NotesForm:
@@ -95,14 +168,15 @@ class NotesForm:
         self.win = root.winfo_toplevel()
         self.image_channels = image_channels or []
         self.vars = {}          # (section, index or None, field) -> StringVar
-        self.labels = {}        # same key -> label widget (turns red when invalid)
+        self.labels = {}        # same key -> label widget (turns orange when the entry looks unusual)
         self.lists = {}         # list section -> container frame
         self.notes_text = None
         self.extra = {}         # sections not edited here (e.g. file_history), written back unchanged
         self.dirty = False
+        self._loading = False
         values = load(path) if path and os.path.exists(path) else {}
-        if not values.get("channels") and self.image_channels:
-            values["channels"] = [{"image_channel": n} for n in self.image_channels]
+        if self.image_channels:
+            values["channels"] = carry_channels(values.get("channels"), self.image_channels)
         self.extra = {k: v for k, v in values.items() if k not in SPEC}
         self._build()
         self.fill(values)
@@ -114,27 +188,23 @@ class NotesForm:
         r = self.root
         if not self.embedded:
             r.title("Histology notes" + (f" - {os.path.basename(self.image)}" if self.image else ""))
-            r.geometry("980x760")
+            r.geometry("1000x780")
             r.minsize(760, 520)
             apply_style(r)
         top = ttk.Frame(r, padding=(16, 12, 16, 4) if not self.embedded else (4, 4, 4, 0))
         top.pack(fill="x")
         if not self.embedded:
             ttk.Label(top, text="Histology notes", style="Head.TLabel").pack(anchor="w")
-        ttk.Label(top, text=f"saved as {self.path}" if self.path else "", style="Sub.TLabel").pack(anchor="w")
-        ttk.Label(top, text="Fields in bold are required. Pick from the drop-downs or type your own answer.",
-                  style="Sub.TLabel").pack(anchor="w", pady=(2, 0))
-
+        ttk.Label(top, text=(f"saved as {self.path}" if self.path else "") + "     Everything is optional; fill in "
+                  "what you know. Pick from the drop-downs or type your own answer.", style="Sub.TLabel"
+                  ).pack(anchor="w")
         self.nb = ttk.Notebook(r)
-        self.nb.pack(fill="both", expand=True, padx=12, pady=6)
-        self.tab_frames = {}
+        self.nb.pack(fill="both", expand=True, padx=12 if not self.embedded else 0, pady=6)
         for title, keys in TABS:
             sf = ScrollFrame(self.nb)
             self.nb.add(sf, text=title)
-            self.tab_frames[title] = sf
             for k in keys:
                 self._section(sf.inner, k)
-
         bottom = ttk.Frame(r, padding=(16, 6, 16, 12) if not self.embedded else (4, 4, 4, 4))
         bottom.pack(fill="x")
         self.status = ttk.Label(bottom, text="", style="Sub.TLabel", wraplength=520, justify="left")
@@ -152,7 +222,7 @@ class NotesForm:
         box = ttk.LabelFrame(parent, text=label, padding=(12, 8), style="Section.TLabelframe")
         box.pack(fill="x", pady=(0, 12))
         if kind == "text":
-            self.notes_text = tk.Text(box, height=14, wrap="word", font=("Segoe UI", 10), relief="solid",
+            self.notes_text = tk.Text(box, height=16, wrap="word", font=("Segoe UI", 10), relief="solid",
                                       borderwidth=1)
             self.notes_text.pack(fill="both", expand=True)
             self.notes_text.bind("<<Modified>>", self._text_modified)
@@ -163,55 +233,79 @@ class NotesForm:
         holder = ttk.Frame(box)
         holder.pack(fill="x")
         self.lists[key] = holder
-        noun = {"primary_antibodies": "primary antibody", "secondary_antibodies": "secondary antibody / nanobody",
-                "other_stains": "stain", "channels": "channel"}[key]
         if key != "channels" or not self.image_channels:
-            ttk.Button(box, text=f"+ Add {noun}", command=lambda: self.add_item(key, {})).pack(anchor="w", pady=(6, 0))
+            ttk.Button(box, text=f"+ Add {NOUN[key].lower()}", command=lambda: self.add_item(key, {})).pack(
+                anchor="w", pady=(6, 0))
+
+    def _options(self, key, f):
+        """Drop-down values; for some fields they come from what was entered on the other tabs."""
+        if key == "secondary_antibodies" and f == "target":
+            return lambda: secondary_target_options(self.collect())
+        if key == "channels" and f == "shows":
+            return lambda: shows_options(self.collect())
+        if key == "channels" and f == "fluorophore":
+            return lambda: fluorophore_options(self.collect()) + [s for s in SUGGEST["fluorophore"]]
+        if f in SUGGEST:
+            return lambda: SUGGEST[f]
+        return None
 
     def _fields(self, parent, key, idx, fields):
         grid = ttk.Frame(parent)
         grid.pack(fill="x")
         grid.columnconfigure(1, weight=1)
-        for row, (f, req, hint) in enumerate(fields):
-            lab = ttk.Label(grid, text=f.replace("_", " ").replace(" um", " (um)") + (" *" if req else ""),
-                            style="Req.TLabel" if req else "Opt.TLabel")
+        for row, (f, hint) in enumerate(fields):
+            lab = ttk.Label(grid, text=f.replace("_", " ").replace(" um", " (um)"), style="Field.TLabel")
             lab.grid(row=row, column=0, sticky="w", padx=(0, 12), pady=3)
             var = tk.StringVar()
-            var.trace_add("write", lambda *a: self._changed())
-            sugg = SUGGEST.get(f)
+            var.trace_add("write", lambda *a, k=(key, idx, f): self._changed(k))
+            opts = self._options(key, f)
             fixed = key == "channels" and f == "image_channel" and self.image_channels
+            cell = ttk.Frame(grid)
+            cell.grid(row=row, column=1, sticky="ew", pady=3)
             if fixed:
-                w = ttk.Entry(grid, textvariable=var, state="readonly")
-            elif sugg:
-                w = ttk.Combobox(grid, textvariable=var, values=sugg)
+                w = ttk.Entry(cell, textvariable=var, state="readonly")
+            elif opts:
+                w = ttk.Combobox(cell, textvariable=var, values=opts())
+                w.configure(postcommand=lambda w=w, o=opts: w.configure(values=o()))
             else:
-                w = ttk.Entry(grid, textvariable=var)
-            w.grid(row=row, column=1, sticky="ew", pady=3)
-            extra = ttk.Frame(grid)
-            extra.grid(row=row, column=2, sticky="w", padx=(8, 0))
+                w = ttk.Entry(cell, textvariable=var)
+            w.pack(side="left", fill="x", expand=True)
             if f in DATE_FIELDS:
-                ttk.Button(extra, text="Today", width=7,
-                           command=lambda v=var: v.set(datetime.date.today().isoformat())).pack(side="left")
-            ttk.Label(extra, text=hint, style="Hint.TLabel").pack(side="left", padx=(6, 0))
+                ttk.Button(cell, text="Pick date", width=10,
+                           command=lambda v=var, a=w: DatePicker(a, v)).pack(side="left", padx=(6, 0))
+                w.bind("<FocusOut>", lambda e, v=var: v.set(normalize_date(v.get())))
+            if key == "channels" and f == "shows":
+                w.bind("<<ComboboxSelected>>", lambda e, i=idx: self._auto_fluor(i))
+                w.bind("<FocusOut>", lambda e, i=idx: self._auto_fluor(i), add="+")
+            ttk.Label(grid, text=hint, style="Hint.TLabel").grid(row=row, column=2, sticky="w", padx=(10, 0))
             self.vars[(key, idx, f)] = var
             self.labels[(key, idx, f)] = lab
 
+    def _auto_fluor(self, idx):
+        """After a 'shows' choice, fill the fluorophore from the matching secondary / stain (if empty)."""
+        fv = self.vars.get(("channels", idx, "fluorophore"))
+        sv = self.vars.get(("channels", idx, "shows"))
+        if fv is not None and sv is not None and not fv.get().strip():
+            fl = fluorophore_for(self.collect(), sv.get())
+            if fl:
+                fv.set(fl)
+
     # ------------------------------------------------------------------ list items
-    def add_item(self, key, item, scroll=True):
+    def add_item(self, key, item, mark=True):
         label, kind, fields = SPEC[key]
         holder = self.lists[key]
         idx = len(holder.winfo_children())
-        noun = {"primary_antibodies": "Primary antibody", "secondary_antibodies": "Secondary antibody / nanobody",
-                "other_stains": "Stain", "channels": "Channel"}[key]
-        card = ttk.LabelFrame(holder, text=f"{noun} {idx + 1}", padding=(10, 6))
+        card = ttk.LabelFrame(holder, text=f"{NOUN[key]} {idx + 1}", padding=(10, 6))
         card.pack(fill="x", pady=(0, 8))
         card._idx = idx
         self._fields(card, key, idx, fields)
         if not (key == "channels" and self.image_channels):
             ttk.Button(card, text="Remove", command=lambda: self.remove_item(key, card)).pack(anchor="e")
-        for f, _, _ in fields:
+        self._loading = True
+        for f, _ in fields:
             self.vars[(key, idx, f)].set(str((item or {}).get(f, "") or ""))
-        if scroll:
+        self._loading = False
+        if mark:
             self._changed()
 
     def remove_item(self, key, card):
@@ -227,14 +321,15 @@ class NotesForm:
         for k in [k for k in self.vars if k[0] == key]:
             del self.vars[k], self.labels[k]
         for it in items:
-            self.add_item(key, it, scroll=False)
+            self.add_item(key, it, mark=False)
 
     # ------------------------------------------------------------------ values in / out
     def fill(self, values):
+        self._loading = True
         for key, (label, kind, fields) in SPEC.items():
             if kind == "dict":
                 cur = values.get(key) or {}
-                for f, _, _ in fields:
+                for f, _ in fields:
                     self.vars[(key, None, f)].set(str(cur.get(f, "") or ""))
             elif kind == "list":
                 items = values.get(key)
@@ -247,22 +342,30 @@ class NotesForm:
                 self.notes_text.delete("1.0", "end")
                 self.notes_text.insert("1.0", str(v))
                 self.notes_text.edit_modified(False)
+        self._loading = False
 
     def collect(self):
+        """The form's values. Also called by the drop-downs while a card is still being built, so fields that do not
+        exist yet count as empty."""
+        def val(k):
+            v = self.vars.get(k)
+            return v.get().strip() if v is not None else ""
         out = {}
         for key, (label, kind, fields) in SPEC.items():
             if kind == "dict":
-                out[key] = {f: self.vars[(key, None, f)].get().strip() for f, _, _ in fields}
+                out[key] = {f: val((key, None, f)) for f, _ in fields}
             elif kind == "list":
-                n = len(self.lists[key].winfo_children())
-                out[key] = [{f: self.vars[(key, i, f)].get().strip() for f, _, _ in fields} for i in range(n)]
+                n = len(self.lists[key].winfo_children()) if key in self.lists else 0
+                out[key] = [{f: val((key, i, f)) for f, _ in fields} for i in range(n)]
             else:
-                out[key] = {"text": self.notes_text.get("1.0", "end").rstrip()}
+                out[key] = {"text": self.notes_text.get("1.0", "end").rstrip() if self.notes_text else ""}
         out.update(self.extra)
         return out
 
     # ------------------------------------------------------------------ checking / saving
-    def _changed(self):
+    def _changed(self, k=None):
+        if self._loading:
+            return
         self.dirty = True
         self.update_status()
 
@@ -271,51 +374,54 @@ class NotesForm:
             self.dirty = True
             self.notes_text.edit_modified(False)
 
-    def problems(self):
-        return check(self.collect(), self.image_channels)
-
     def update_status(self):
-        errors, warnings = self.problems()
-        for k, lab in self.labels.items():
-            lab.configure(style="Req.TLabel" if str(lab.cget("text")).endswith("*") else "Opt.TLabel")
-        bad = self._bad_keys(errors)
-        for k in bad:
+        d = self.collect()
+        issues, sugg = check(d, self.image_channels)
+        for lab in self.labels.values():
+            lab.configure(style="Field.TLabel")
+        for k in self._odd_keys(issues):
             if k in self.labels:
-                self.labels[k].configure(style="Bad.TLabel")
-        if errors:
-            self.status.configure(text=f"{len(errors)} required field(s) still missing or not in the expected form "
-                                       f"(shown in red). Click Check for the list.", foreground=RED)
+                self.labels[k].configure(style="Odd.TLabel")
+        level, msg = completeness(d)
+        if level == "none":
+            msg = ("Nothing filled in yet. The notes are optional, but without them the MIP carries no record of the "
+                   "staining.")
         else:
-            self.status.configure(text="Complete." + (f"  ({len(warnings)} suggestion(s): click Check)" if warnings
-                                                      else ""), foreground="#2e7d32")
+            msg = msg[0].upper() + msg[1:] + "."
+        if issues or sugg:
+            msg += f"  {len(issues) + len(sugg)} thing(s) to look at (orange) -- click Check."
+        self.status.configure(text=("Unsaved changes.  " if self.dirty else "") + msg,
+                              foreground=ORANGE if (issues or sugg or level != "ok" or "nothing yet" in msg)
+                              else GRAY)
 
-    def _bad_keys(self, errors):
-        """Map check() messages back to fields: 'Label #2: 'f' ...' / 'Label: 'f' ...'."""
+    def _odd_keys(self, issues):
+        """Map check() messages ('Label #2: field name '...' -- ...') back to fields."""
         bad = set()
-        by_label = {lab: k for k, (lab, kind, f) in SPEC.items()}
-        for e in errors:
+        by_label = {lab.split(" (")[0]: k for k, (lab, kind, f) in SPEC.items()}
+        for e in issues:
             head, _, rest = e.partition(": ")
             idx = None
             if " #" in head:
                 head, n = head.rsplit(" #", 1)
                 idx = int(n) - 1 if n.isdigit() else None
-            key = by_label.get(head)
-            f = rest.split("'")[1] if rest.count("'") >= 2 else None
-            if key and f:
-                bad.add((key, idx, f))
+            key = by_label.get(head.split(" (")[0])
+            if not key:
+                continue
+            fname = rest.split(" '")[0].replace(" ", "_")
+            bad.add((key, idx, fname))
         return bad
 
     def show_problems(self):
-        errors, warnings = self.problems()
-        if not errors and not warnings:
-            messagebox.showinfo("Histology notes", "Everything required is filled in.", parent=self.win)
+        issues, sugg = check(self.collect(), self.image_channels)
+        if not issues and not sugg:
+            messagebox.showinfo("Histology notes", "Nothing looks unusual.", parent=self.win)
             return
         msg = ""
-        if errors:
-            msg += "Still needed:\n" + "\n".join(f"  - {e}" for e in errors)
-        if warnings:
-            msg += ("\n\n" if msg else "") + "Suggestions:\n" + "\n".join(f"  - {w}" for w in warnings)
-        messagebox.showwarning("Histology notes", msg, parent=self.win)
+        if issues:
+            msg += "Entries in an unexpected form:\n" + "\n".join(f"  - {e}" for e in issues)
+        if sugg:
+            msg += ("\n\n" if msg else "") + "Worth a look:\n" + "\n".join(f"  - {w}" for w in sugg)
+        messagebox.showinfo("Histology notes", msg, parent=self.win)
 
     def save(self):
         if not self.path:
@@ -323,23 +429,21 @@ class NotesForm:
                                                      filetypes=[("Histology notes", "*_histology.toml *.toml")])
             if not self.path:
                 return False
-        with open(self.path, "w", encoding="utf-8") as fh:
-            fh.write(render(self.collect(), os.path.basename(self.image) if self.image else ""))
+        d = self.collect()
+        try:
+            save(self.path, d, os.path.basename(self.image) if self.image else "")
+        except OSError as e:
+            messagebox.showerror("Histology notes", f"Could not save:\n{e}", parent=self.win)
+            return False
+        self.fill(load(self.path))            # show normalized values (e.g. dates as YYYY-MM-DD)
         self.dirty = False
-        errors, _ = self.problems()
-        self.status.configure(text=f"Saved {self.path}" + (f"  -- {len(errors)} required field(s) still missing."
-                                                          if errors else "  -- complete."),
-                              foreground=RED if errors else "#2e7d32")
+        self.update_status()
+        self.status.configure(text=f"Saved {self.path}.  " + self.status.cget("text"))
         if self.on_saved:
             self.on_saved()
         return True
 
     def save_close(self):
-        errors, _ = self.problems()
-        if errors and not messagebox.askyesno(
-                "Histology notes", f"{len(errors)} required field(s) are still missing.\n\nSave anyway and finish "
-                                   "later? (bigmip will not make a MIP until they are filled in.)", parent=self.win):
-            return
         if self.save():
             self.win.destroy()
 
@@ -359,19 +463,18 @@ class NotesForm:
             return
         old = load(src)
         cur = self.collect()
-        keep_sample = {f: cur["sample"].get(f, "") for f in ("sample_id", "animal_id", "sex", "age_or_date_of_birth",
-                                                             "tissue_collected", "eye")}
+        keep = {f: cur["sample"].get(f, "") for f in ("sample_id", "animal_id", "sex", "age_or_date_of_birth",
+                                                      "tissue_collected", "eye")}
         new = dict(old)
-        new["sample"] = dict(old.get("sample") or {}, **keep_sample)
+        new["sample"] = dict(old.get("sample") or {}, **keep)
         new["dates"] = cur["dates"]
-        if self.image_channels:          # keep this image's channel names, take 'shows' / fluorophore by name
-            prev = {str(c.get("image_channel", "")): c for c in old.get("channels") or []}
-            prev3 = {str(c.get("image_channel", ""))[:3]: c for c in old.get("channels") or []}
-            new["channels"] = [dict(prev.get(n) or prev3.get(n[:3]) or {}, image_channel=n) for n in self.image_channels]
+        new.pop("file_history", None)
+        if self.image_channels:
+            new["channels"] = carry_channels(old.get("channels"), self.image_channels)
         self.fill(new)
         self._changed()
-        self.status.configure(text=f"Protocol copied from {os.path.basename(src)}. Fill in this sample's animal "
-                                   f"and dates.", foreground=ACCENT)
+        self.status.configure(text=f"Protocol copied from {os.path.basename(src)}. Fill in this sample's animal and "
+                                   f"dates, then Save.", foreground=ACCENT)
 
 
 def _dpi_aware():
@@ -384,7 +487,7 @@ def _dpi_aware():
 
 
 def run(image=None, notes_path=None, image_channels=None, screenshot=None, prefill=None):
-    """Open the form. `screenshot`: save a PNG of each tab and close (used for documentation / tests)."""
+    """Open the form on its own. `screenshot`: save a PNG of each tab and close (for documentation / tests)."""
     _dpi_aware()
     root = tk.Tk()
     if image is None and notes_path is None:

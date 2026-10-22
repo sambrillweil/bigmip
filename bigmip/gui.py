@@ -15,10 +15,9 @@ import threading
 import tkinter as tk
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
-from .notes import check, find_notes, load, notes_path_for
-from .notes_gui import ACCENT, GREY, RED, NotesForm, ScrollFrame, _dpi_aware, apply_style
+from .notes import check, completeness, find_notes, load, notes_path_for
+from .notes_gui import GREEN, GRAY, ORANGE, RED, NotesForm, ScrollFrame, _dpi_aware, apply_style
 
-GREEN = "#2e7d32"
 SETTINGS = os.path.join(os.path.expanduser("~"), ".bigmip_settings.json")
 
 
@@ -101,7 +100,7 @@ class App:
 
         pick = ttk.Frame(r, padding=(16, 4))
         pick.pack(fill="x")
-        ttk.Label(pick, text="Image", style="Req.TLabel").pack(side="left")
+        ttk.Label(pick, text="Image", font=("Segoe UI", 10, "bold")).pack(side="left")
         self.image_var = tk.StringVar()
         e = ttk.Entry(pick, textvariable=self.image_var)
         e.pack(side="left", fill="x", expand=True, padx=8)
@@ -174,7 +173,7 @@ class App:
         self.zinfo = ttk.Label(row, text="", style="Hint.TLabel")
         self.zinfo.pack(side="left", padx=6)
 
-        self.chan_box = ttk.LabelFrame(f, text="Channels: include, colour, contrast", padding=10,
+        self.chan_box = ttk.LabelFrame(f, text="Channels: include, color, contrast", padding=10,
                                        style="Section.TLabelframe")
         self.chan_box.pack(fill="x", pady=(0, 10))
         self.chan_rows = []
@@ -191,7 +190,7 @@ class App:
         r2 = ttk.Frame(out)
         r2.pack(fill="x", pady=2)
         self.rgb_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(r2, text="Colour picture for slides (RGB TIFF + PNG)", variable=self.rgb_var,
+        ttk.Checkbutton(r2, text="Color picture for slides (RGB TIFF + PNG)", variable=self.rgb_var,
                         command=self.update_command).pack(side="left")
         ttk.Label(r2, text="   scale bar (um, 0 = none)").pack(side="left")
         self.bar_var = tk.StringVar(value="0")
@@ -199,6 +198,13 @@ class App:
         self.prev_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(r2, text="Small preview picture", variable=self.prev_var,
                         command=self.update_command).pack(side="left", padx=(18, 0))
+        r5 = ttk.Frame(out)
+        r5.pack(fill="x", pady=2)
+        self.notes_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(r5, text="Include the histology notes", variable=self.notes_var,
+                        command=self.update_command).pack(side="left")
+        ttk.Label(r5, text="channel names in Fiji, the notes inside the TIFF (Image > Show Info) and a copy of the "
+                           "notes file", style="Hint.TLabel").pack(side="left", padx=8)
         r3 = ttk.Frame(out)
         r3.pack(fill="x", pady=2)
         ttk.Label(r3, text="Save to").pack(side="left")
@@ -244,7 +250,7 @@ class App:
         m = self.meta
         hdr = ttk.Frame(self.chan_box)
         hdr.pack(fill="x")
-        for text, w in (("use", 4), ("channel", 30), ("colour", 8), ("contrast", 12), ("low", 7), ("high", 7),
+        for text, w in (("use", 4), ("channel", 30), ("color", 8), ("contrast", 12), ("low", 7), ("high", 7),
                         ("gamma (for pictures)", 20)):
             ttk.Label(hdr, text=text, style="Hint.TLabel", width=w).pack(side="left", padx=3)
         for c, name in enumerate(m["names"]):
@@ -274,7 +280,7 @@ class App:
             self.chan_rows.append(d)
 
     def pick_color(self, d, btn):
-        res = colorchooser.askcolor(color=d["color"], parent=self.root, title="Channel colour")
+        res = colorchooser.askcolor(color=d["color"], parent=self.root, title="Channel color")
         if res and res[1]:
             d["color"] = res[1]
             btn.configure(background=res[1], activebackground=res[1])
@@ -399,40 +405,58 @@ class App:
         path = find_notes(self.image) or notes_path_for(self.image)
         holder = ttk.Frame(self.tab_notes)
         holder.pack(fill="both", expand=True)
-        self.notes_form = NotesForm(holder, self.image, path, list(self.meta["names"]), embedded=True,
-                                    on_saved=self.refresh_badge)
+        self.notes_form = None
+        try:
+            self.notes_form = NotesForm(holder, self.image, path, list(self.meta["names"]), embedded=True,
+                                        on_saved=self.refresh_badge)
+        except SystemExit as e:                      # a hand-edited notes file that is not valid TOML
+            ttk.Label(holder, text=str(e).strip(), style="Sub.TLabel", justify="left", wraplength=900
+                      ).pack(anchor="w", pady=(20, 8))
+            ttk.Button(holder, text="Open the notes file in a text editor", command=lambda: open_path(path)
+                       ).pack(anchor="w")
+            ttk.Button(holder, text="Reload", command=self._load_notes).pack(anchor="w", pady=6)
         self.refresh_badge()
 
     def notes_state(self):
-        """('none' | 'incomplete' | 'complete', n_errors)"""
+        """(state, level, message, n_odd): state = 'none' | 'saved' | 'unreadable'; level = notes.completeness()'s
+        'none' | 'sparse' | 'ok'. Notes are optional, but missing / largely missing ones are flagged."""
         p = find_notes(self.image)
         if not p:
-            return "none", 0
+            return "none", "none", "histology notes: none yet", 0
         try:
-            errors, _ = check(load(p), list(self.meta["names"]))
+            d = load(p)
         except SystemExit:
-            return "incomplete", 1
-        return ("incomplete", len(errors)) if errors else ("complete", 0)
+            return "unreadable", "none", "histology notes: the notes file could not be read (see tab 1)", 0
+        issues, sugg = check(d, list(self.meta["names"]))
+        level, msg = completeness(d)
+        return "saved", level, msg, len(issues) + len(sugg)
 
     def refresh_badge(self):
-        s, n = self.notes_state()
-        txt, col = {"none": ("Histology notes: none yet  (fill them in on tab 1 and Save)", RED),
-                    "incomplete": (f"Histology notes: {n} required field(s) missing", RED),
-                    "complete": ("Histology notes: complete", GREEN)}[s]
+        s, level, msg, odd = self.notes_state()
+        txt = msg[0].upper() + msg[1:]
+        if level == "none":
+            txt, col = txt + ". Optional, but the MIP will carry no staining record (fill them in on tab 1)", RED
+        elif level == "sparse":
+            col = ORANGE
+        else:
+            col = ORANGE if (odd or "nothing yet" in msg) else GREEN
+        if odd:
+            txt += f"; {odd} thing(s) to look at (tab 1, Check)"
         self.badge.configure(text=txt, foreground=col)
 
     def _show_existing_report(self):
         self.meta_view.delete("1.0", "end")
         p = os.path.splitext(self.image)[0] + "_metadata.md"
         if os.path.exists(p):
-            self.meta_view.insert("1.0", open(p, encoding="utf-8").read())
+            with open(p, encoding="utf-8") as fh:
+                self.meta_view.insert("1.0", fh.read())
         elif not self.image.lower().endswith(".ims"):
             self.meta_view.insert("1.0", "The metadata report reads .ims files. For TIFFs, the basics are shown at "
                                          "the top of the window.")
         self.meta_btn.configure(state="normal" if self.image.lower().endswith(".ims") else "disabled")
 
     # ================================================================== MIP
-    def mip_args(self, skip_notes=False):
+    def mip_args(self):
         a = [self.image]
         if not self.meta:
             return a
@@ -489,7 +513,7 @@ class App:
             a += ["-o", self.out_var.get()]
         if self.image.lower().endswith(".ims"):
             a += ["--workers", self.workers_var.get()]
-        if skip_notes:
+        if not self.notes_var.get():
             a.append("--skip-notes")
         return a
 
@@ -510,25 +534,19 @@ class App:
         if not getattr(self, "image", None):
             messagebox.showinfo("bigmip", "Choose an image first.", parent=self.root)
             return
-        if self.notes_form and self.notes_form.dirty:
-            if messagebox.askyesno("bigmip", "Save the histology notes first?", parent=self.root):
+        if self.notes_form and self.notes_form.dirty and self.notes_var.get():
+            if messagebox.askyesno("bigmip", "Save the histology notes first (so the MIP includes them)?",
+                                   parent=self.root):
                 self.notes_form.save()
-        s, n = self.notes_state()
-        skip = False
-        if s != "complete":
-            msg = ("This image has no histology notes yet." if s == "none" else
-                   f"The histology notes are missing {n} required field(s).")
-            ans = messagebox.askyesnocancel(
-                "bigmip", msg + "\n\nYes = go to the notes tab now\nNo = make the MIP without notes\nCancel = stop",
-                parent=self.root)
-            if ans is None:
-                return
-            if ans:
-                self.nb.select(self.tab_notes)
-                return
-            skip = True
+        s, level, msg, _ = self.notes_state()
+        if self.notes_var.get() and level != "ok" and not messagebox.askyesno(
+                "bigmip", f"{msg[0].upper() + msg[1:]}.\n\nThe notes are optional, but without them the MIP carries no "
+                          "record of the staining (what each channel shows, antibodies, dilutions, dates).\n\n"
+                          "Make the MIP anyway?\n(No = go to the notes tab)", icon="warning", parent=self.root):
+            self.nb.select(self.tab_notes)
+            return
         self.outputs = []
-        self.run_tool(["-m", "bigmip"] + self.mip_args(skip_notes=skip), "Making the MIP")
+        self.run_tool(["-m", "bigmip"] + self.mip_args(), "Making the MIP")
 
     def run_tool(self, args, what):
         if self.proc:
@@ -682,7 +700,28 @@ class App:
             self.rn_tree.insert("", "end", values=(shown, os.path.basename(n)))
         return res
 
+    def _busy(self):
+        """A MIP / report is running: its files are open, so renaming them would fail."""
+        if self.proc:
+            messagebox.showinfo("bigmip", f"Wait until '{self.what}' has finished (or Stop it): the files are in "
+                                          "use while it runs.", parent=self.root)
+        return bool(self.proc)
+
+    def _renamed(self, done, error):
+        for o, n in done:
+            self.log_line(f"renamed {o} -> {os.path.basename(n)}")
+        if error:
+            self.log_line(error)
+            messagebox.showerror("bigmip", error, parent=self.root)
+        if done:
+            self.set_image(done[0][1])
+            self.rn_tree.delete(*self.rn_tree.get_children())
+            if not error:
+                messagebox.showinfo("bigmip", f"Renamed {len(done)} file(s).", parent=self.root)
+
     def rename_do(self):
+        if self._busy():
+            return
         res = self.rename_preview()
         if not res:
             return
@@ -695,27 +734,20 @@ class App:
         if self.notes_form and self.notes_form.dirty:
             self.notes_form.save()
         from .rename import do_rename
-        done = do_rename(plan, old, new, assume_yes=True)
-        for o, n in done:
-            self.log_line(f"renamed {o} -> {os.path.basename(n)}")
-        if done:
-            self.set_image(done[0][1])
+        self._renamed(*do_rename(plan, old, new, assume_yes=True))
 
     def rename_undo(self):
-        if not getattr(self, "image", None):
+        if not getattr(self, "image", None) or self._busy():
             return
         from .rename import undo
         if not messagebox.askyesno("bigmip", "Undo the last rename of this image?", parent=self.root):
             return
         try:
-            done = undo(self.image, assume_yes=True)
+            res = undo(self.image, assume_yes=True)
         except SystemExit as e:
             messagebox.showinfo("bigmip", str(e), parent=self.root)
             return
-        for o, n in done:
-            self.log_line(f"renamed {o} -> {os.path.basename(n)}")
-        if done:
-            self.set_image(done[0][1])
+        self._renamed(*res)
 
 
 def main(argv=None):

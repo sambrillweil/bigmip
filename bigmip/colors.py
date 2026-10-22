@@ -1,4 +1,4 @@
-"""Channel colours: parsing user input, reading colours stored in files, and building ImageJ LUTs."""
+"""Channel colors: parsing user input, reading colors stored in files, and building ImageJ LUTs."""
 import re
 
 import numpy as np
@@ -10,7 +10,7 @@ NAMED = {
     "orange": (1, 0.5, 0),
 }
 
-# Used only when a file stores no usable colour: typical colour by excitation laser line (nm).
+# Used only when a file stores no usable color: typical color by excitation laser line (nm).
 BY_WAVELENGTH = [(420, "blue"), (500, "green"), (580, "orange"), (620, "red"), (10_000, "magenta")]
 
 
@@ -22,11 +22,11 @@ def parse_color(text):
     h = t.lstrip("#")
     if re.fullmatch(r"[0-9a-f]{6}", h):
         return tuple(int(h[i:i + 2], 16) / 255 for i in (0, 2, 4))
-    raise ValueError(f"unknown colour '{text}' (use a name like {', '.join(NAMED)} or a hex code like #ff8000)")
+    raise ValueError(f"unknown color '{text}' (use a name like {', '.join(NAMED)} or a hex code like #ff8000)")
 
 
 def color_from_wavelength(text):
-    """Guess a colour from a channel name or wavelength string such as '488_GFP' or '561 nm'."""
+    """Guess a color from a channel name or wavelength string such as '488_GFP' or '561 nm'."""
     m = re.search(r"(\d{3})", text or "")
     if not m:
         return None
@@ -74,6 +74,6 @@ def parse_color_list(text, names):
 
 
 def imagej_lut(rgb):
-    """(3, 256) uint8 LUT ramping from black to the given colour, as ImageJ expects."""
+    """(3, 256) uint8 LUT ramping from black to the given color, as ImageJ expects."""
     ramp = np.arange(256, dtype=np.float64)
     return np.stack([(ramp * c).round().astype(np.uint8) for c in rgb])

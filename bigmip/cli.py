@@ -29,7 +29,7 @@ def build_parser():
     p = argparse.ArgumentParser(
         prog="bigmip", formatter_class=argparse.RawDescriptionHelpFormatter, epilog=EXAMPLES,
         description="Max-intensity projection of a large .ims or TIFF stack, keeping pixel size, channel names and "
-                    "channel colours. Output: a Fiji-ready composite TIFF (one channel per colour).")
+                    "channel colors. Output: a Fiji-ready composite TIFF (one channel per color).")
     p.add_argument("file", help="input .ims or .tif/.tiff (OME-TIFF, ImageJ TIFF)")
     p.add_argument("-o", "--outdir", help="output folder (default: a 'bigmip_output' folder next to the input)")
     p.add_argument("--info", action="store_true", help="only print what is in the file, write nothing")
@@ -38,9 +38,9 @@ def build_parser():
     p.add_argument("--z", type=int, nargs=2, metavar=("FIRST", "LAST"),
                    help="project only planes FIRST..LAST (1-based, inclusive). Default: all planes")
     p.add_argument("--channels", help="keep only these channels, 1-based, e.g. '1,3,4'. Default: all")
-    p.add_argument("--colors", help="recolour channels: a list in channel order ('blue,green,red,magenta') or "
+    p.add_argument("--colors", help="recolor channels: a list in channel order ('blue,green,red,magenta') or "
                                     "assignments ('1=blue,4=gray' or '405=cyan'). Names: red green blue cyan magenta "
-                                    "yellow orange gray, or hex like #ff8000. Default: the colours stored in the file")
+                                    "yellow orange gray, or hex like #ff8000. Default: the colors stored in the file")
     p.add_argument("--ranges", help="display range per channel in channel order, 'auto' or 'LOW-HIGH', e.g. "
                                     "'auto,100-800,auto'. Default: from the file if stored, else auto")
     p.add_argument("--auto-ranges", action="store_true",
@@ -52,9 +52,9 @@ def build_parser():
     p.add_argument("--scalebar", type=float, default=0, metavar="UM",
                    help="draw a scale bar of this many microns on the RGB/preview images")
     p.add_argument("--no-preview", action="store_true", help="skip the small preview PNG")
-    p.add_argument("--notes", help="histology notes file (default: NAME_histology.yaml next to the image, or "
-                                   "histology.yaml in its folder). Create one with: bigmip-notes FILE")
-    p.add_argument("--skip-notes", action="store_true", help="make the MIP without histology notes")
+    p.add_argument("--notes", help="histology notes file (default: NAME_histology.toml next to the image, or "
+                                   "histology.toml in its folder). Create one with: bigmip-notes FILE")
+    p.add_argument("--skip-notes", action="store_true", help="do not include the histology notes in the outputs")
     p.add_argument("--workers", type=int, default=max(1, min(8, (os.cpu_count() or 2) - 2)),
                    help=".ims only: parallel processes (default: up to 8). Lower it if RAM is short")
     p.add_argument("--version", action="version", version=f"bigmip {__version__}")
@@ -124,21 +124,25 @@ def main(argv=None):
     for c in range(nC):
         col = m["colors"][c]
         rng = m["ranges"][c]
-        print(f"  channel {c + 1}: {m['names'][c]:<28s} colour {tuple(round(v, 2) for v in col) if col else 'none'}"
+        print(f"  channel {c + 1}: {m['names'][c]:<28s} color {tuple(round(v, 2) for v in col) if col else 'none'}"
               f"   stored display range {rng if rng else 'none'}")
 
-    # ---- histology notes (required unless --skip-notes)
-    from .notes import channel_labels, find_notes, require_notes, summary_text
+    # ---- histology notes (optional): used for channel labels, embedded in the TIFF, copied to the outputs
+    from .notes import channel_labels, find_notes, summary_text, use_notes
     if a.info:
         p = find_notes(path, a.notes)
-        print(f"  histology notes: {p if p else 'none yet (create with: py -m bigmip.notes FILE)'}")
+        print(f"  histology notes: {p if p else 'none (optional; add them with: py -m bigmip.notes FILE)'}")
         return
     notes = notes_path = None
     if a.skip_notes:
-        step("histology notes skipped (--skip-notes)")
+        step("histology notes not included (--skip-notes)")
     else:
-        notes, notes_path = require_notes(path, a.notes, m["names"])
-        step(f"histology notes OK: {notes_path}")
+        notes, notes_path, remarks = use_notes(path, a.notes, m["names"])
+        step(f"histology notes: {notes_path}" if notes_path else
+             "WARNING: no histology notes for this image, so the MIP carries no staining record "
+             f"(optional; add them with:  py -m bigmip.notes \"{path}\")")
+        for r in remarks:
+            print(f"  {r}")
 
     # ---- which channels / planes
     chans = list(range(nC))
@@ -154,7 +158,7 @@ def main(argv=None):
             sys.exit(f"--z: empty plane range (file has planes 1..{Z})")
     names = [m["names"][c] for c in chans]
 
-    # ---- colours: file -> overrides; fall back to a fixed cycle for channels without one
+    # ---- colors: file -> overrides; fall back to a fixed cycle for channels without one
     cycle = [(0, 0, 1), (0, 1, 0), (1, 0, 0), (1, 0, 1), (0, 1, 1), (1, 1, 0), (1, 1, 1)]
     colors = [m["colors"][c] or cycle[i % len(cycle)] for i, c in enumerate(chans)]
     if a.colors:
@@ -219,7 +223,7 @@ def main(argv=None):
             written.append(write_composite(os.path.join(outdir, f"{stem}_{tag}_x{k}smaller.tif"),
                                            block_max(proj, k), labels, colors, ranges, pk, info))
     if a.rgb or not a.no_preview:
-        step("rendering the colour image" + (" (RGB TIFF + PNG + preview)" if a.rgb else " (preview)"))
+        step("rendering the color image" + (" (RGB TIFF + PNG + preview)" if a.rgb else " (preview)"))
         rgb = render_rgb(proj, colors, ranges, gammas)
         if a.scalebar and px[0]:
             add_scalebar(rgb, a.scalebar, px[0])

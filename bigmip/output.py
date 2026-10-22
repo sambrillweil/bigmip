@@ -30,7 +30,7 @@ def auto_range(img, lo_pct=0.5, hi_pct=99.9):
 
 
 def write_composite(path, stack, names, colors, ranges, pixel_um, info=None):
-    """(C, Y, X) array -> ImageJ hyperstack TIFF that Fiji opens as a coloured composite with the right scale,
+    """(C, Y, X) array -> ImageJ hyperstack TIFF that Fiji opens as a colored composite with the right scale,
     channel names and display ranges. `info` (text) is shown in Fiji under Image > Show Info. Returns the path."""
     stack = np.asarray(stack)
     if stack.ndim == 2:
@@ -60,7 +60,7 @@ def block_max(stack, k):
 
 def render_rgb(stack, colors, ranges, gammas=None, rows=2048):
     """Blend channels into one 8-bit RGB image: each channel scaled to its display range (and gamma), tinted with its
-    colour, and the colours added. Done in row strips so very large images fit in memory."""
+    color, and the colors added. Done in row strips so very large images fit in memory."""
     C, Y, X = stack.shape
     gammas = gammas or [1.0] * C
     out = np.zeros((Y, X, 3), np.uint8)

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "bigmip"
 version = "0.1.0"
-description = "Memory-efficient max-intensity projections of very large .ims / TIFF microscopy stacks, keeping scale and channel colours (Fiji-ready)."
+description = "Memory-efficient max-intensity projections of very large .ims / TIFF microscopy stacks, keeping scale and channel colors (Fiji-ready)."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }

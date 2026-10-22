@@ -102,36 +102,56 @@ def _log(folder, rows):
         w.writerows(rows)
 
 
+def _short(path, base):
+    """Path relative to base when possible (a different drive cannot be made relative)."""
+    try:
+        return os.path.relpath(path, base)
+    except ValueError:
+        return path
+
+
 def do_rename(plan, old_stem, new_stem, assume_yes=False, batch=None):
+    """Rename the files in `plan` (the image first). Returns (done, error): the renames made, and an explanation if
+    something failed (renaming stops at the first failure; Undo puts back what was done)."""
     clashes = [n for _, n in plan if os.path.exists(n)]
     if clashes:
-        raise SystemExit("These new names already exist (nothing was renamed):\n" + "\n".join(f"  {c}" for c in clashes))
+        return [], "These new names already exist, so nothing was renamed:\n" + "\n".join(f"  {c}" for c in clashes)
+    base = os.path.dirname(plan[0][0])
     print(f"Rename '{old_stem}'  ->  '{new_stem}'  ({len(plan)} file(s)):")
     for o, n in plan:
-        print(f"  {os.path.relpath(o, os.path.dirname(plan[0][0]))}\n      -> {os.path.basename(n)}")
+        print(f"  {_short(o, base)}\n      -> {os.path.basename(n)}")
     if not assume_yes:
         ans = input("Go ahead? [y/N] ").strip().lower()
         if ans not in ("y", "yes"):
             print("Nothing renamed.")
-            return []
+            return [], None
     when = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     batch = batch or when
-    done = []
-    try:
-        for o, n in plan:
+    done, error = [], None
+    for o, n in plan:
+        try:
             os.rename(o, n)
             done.append((o, n))
-    except OSError as e:
-        print(f"\nStopped: could not rename {o}\n  {e}\nRenamed so far (recorded in {LOG}):")
-        for a, b in done:
-            print(f"  {a} -> {b}")
+        except OSError as e:
+            busy = getattr(e, "winerror", None) == 32 or "being used" in str(e)
+            error = (f"Could not rename {os.path.basename(o)}: "
+                     + ("it is open in another program (Fiji, Imaris, a MIP that is running, or Google Drive still "
+                        "uploading it). Close it and try again." if busy else str(e))
+                     + (f"\n{len(done)} file(s) were renamed before this; Undo puts them back." if done
+                        else "\nNothing was renamed."))
+            break
     for _, n in done:
-        _replace_inside(n, old_stem, new_stem)
-        _note_history(n, old_stem, when)
+        try:
+            _replace_inside(n, old_stem, new_stem)
+            _note_history(n, old_stem, when)
+        except OSError as e:
+            print(f"  (could not update the old name inside {n}: {e})")
     if done:      # one log, in the image's folder (the first file of the plan is always the image)
         _log(os.path.dirname(done[0][1]), [[when, o, n, batch] for o, n in done])
-    print(f"Renamed {len(done)} file(s). Undo with:  py -m bigmip.rename \"{done[0][1] if done else ''}\" --undo")
-    return done
+        print(f"Renamed {len(done)} file(s). Undo with:  py -m bigmip.rename \"{done[0][1]}\" --undo")
+    if error:
+        print("\n" + error)
+    return done, error
 
 
 def undo(image, assume_yes=False):
@@ -163,7 +183,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.undo:
         for img in a.images:
-            undo(img)
+            if undo(img)[1]:
+                raise SystemExit(1)
         return
     if a.replace:
         images = []
@@ -180,7 +201,8 @@ def main(argv=None):
                 continue
             new_stem = stem.replace(a.replace[0], a.replace[1])
             plan, old = plan_rename(img, new_stem, a.also)
-            do_rename(plan, old, new_stem, a.yes)
+            if do_rename(plan, old, new_stem, a.yes)[1]:
+                raise SystemExit(1)
         return
     if len(a.images) != 2:
         raise SystemExit("give the image and the new name:  bigmip-rename IMAGE NEW_NAME   (or use --replace OLD NEW)")
@@ -191,7 +213,8 @@ def main(argv=None):
     if any(ch in new_stem for ch in '\\/:*?"<>|'):
         raise SystemExit(f"'{new_stem}' contains characters not allowed in file names")
     plan, old = plan_rename(img, new_stem, a.also)
-    do_rename(plan, old, new_stem, a.yes)
+    if do_rename(plan, old, new_stem, a.yes)[1]:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

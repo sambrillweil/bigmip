@@ -44,7 +44,7 @@ def write_ims(path, vol, pixel_um=0.25, z_um=1.0, colors=None, names=None, chunk
 
 
 def write_ome_tiff(path, vol, pixel_um=0.151, z_um=0.972, bgr_colors=True):
-    """Fusion-style OME-TIFF: CZYX pages, colours stored as 0x00BBGGRR integers."""
+    """Fusion-style OME-TIFF: CZYX pages, colors stored as 0x00BBGGRR integers."""
     nc, nz, ny, nx = vol.shape
     cols = [0xFF0000, 0x00FF00, 0x0000FF][:nc] if bgr_colors else [-16776961, 16711935, 65535][:nc]
     chans = "".join(f'<OME:Channel ID="Channel:{c}" Name="{(405, 488, 561)[c]}_test" Color="{cols[c]}" '
