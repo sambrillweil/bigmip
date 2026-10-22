@@ -111,6 +111,17 @@ primaries come from) turns **orange** as a hint; **Check** lists them all.
 The notes are saved as `NAME_histology.toml` next to the image. It's a plain text file and can be opened in any
 editor. A `histology.toml` in a folder applies to every image in that folder that has no notes of its own.
 
+**Change log.** Every change to the notes is recorded in `NAME_histology_changes.csv` next to them (opens in
+Excel; the **Change log** button opens it). One row per changed field: when, who (the computer's user name), how,
+section, entry (e.g. antibody #2), field, old value, new value. Also recorded:
+- edits made outside bigmip (e.g. in Notepad): found and itemized the next time bigmip opens the notes, by comparing
+  with `NAME_histology_lastlogged.toml`, bigmip's copy of the last logged version (don't edit or delete that file);
+- every MIP made with the notes (which file), so you can see whether the notes changed after a MIP was made;
+- renames.
+
+The log is only ever added to. If it is open in Excel when you save, the notes are still saved and the change is
+logged the next time bigmip opens them.
+
 ### Tab 2: Make MIP
 - **Resolution:** `.ims` files contain smaller copies of the data. "1/4 size" is a quick test that takes seconds.
 - **Planes:** project only some planes, e.g. to skip a bright surface layer.
@@ -154,7 +165,7 @@ renamed, then **Rename**. This covers:
 - all MIP outputs;
 - the metadata report.
 
-The old name is also updated inside the notes and the report. The notes keep a record of the old name, every rename
+The old name is also updated inside the notes and the report (the notes' change log keeps the old names and records the rename). The notes keep a record of the old name, every rename
 is logged in `rename_log.csv` next to the image, and **Undo last rename** reverses the last rename. The image data is
 never changed, only file names.
 
@@ -181,6 +192,9 @@ overwritten: if a file already exists, a new one is written with `_2`, `_3`, ...
 | `NAME_MIP_RGB.tif` / `.png` | One flattened color picture (8-bit) for slides, optionally with a scale bar. |
 | `NAME_MIP_preview.png` | A small picture for a quick look. |
 | `NAME_histology.toml` | A copy of the notes the MIP was made with. |
+
+Next to the image, bigmip also keeps the notes (`NAME_histology.toml`), their change log
+(`NAME_histology_changes.csv`) and its copy of the last logged notes (`NAME_histology_lastlogged.toml`).
 
 ---
 

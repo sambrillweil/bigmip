@@ -13,6 +13,7 @@ Every field is optional. Where notes are looked for (first match wins): the --no
 <name>_histology.toml next to the image, then histology.toml in the image's folder.
 """
 import argparse
+import csv
 import datetime
 import json
 import os
@@ -244,9 +245,19 @@ def render(values, title=""):
     return "\n".join(L) + "\n"
 
 
-def save(path, values, title=""):
+def save(path, values, title="", how="bigmip app"):
+    """Write the notes, and log every change (vs the file as it was) in the change log next to them."""
+    values = normalize(values)
+    track(path)                                   # first log edits made outside bigmip since the last logged save
+    before = _load_quiet(path)
+    if before is None:
+        before = _load_quiet(_snapshot_path(path)) or {}
+    is_new = not os.path.exists(path)
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write(render(normalize(values), title))
+        fh.write(render(values, title))
+    rows = [[_now(), _user(), "created" if is_new else how, *r] for r in diff(before, values)]
+    if rows or not os.path.exists(_snapshot_path(path)):
+        _commit(path, rows, values)
 
 
 def load(path):
@@ -258,6 +269,165 @@ def load(path):
             raise SystemExit(f"\nCould not read {path}:\n  {e}\n"
                              "Most often an answer is missing its quotes: write  dilution = \"1:500\"  "
                              "not  dilution = 1:500   (or edit the notes in the bigmip app instead)") from None
+
+
+# ------------------------------------------------------------------------------------------------- change log
+# Every change to the notes is one row of <name>_histology_changes.csv (opens in Excel). bigmip keeps a copy of the last
+# logged version (<name>_histology_lastlogged.toml); when the notes differ from it on opening, the notes were edited
+# outside bigmip (e.g. in Notepad) and those changes are logged too. The CSV is only ever appended to, never read back.
+LOG_COLUMNS = ["when", "who", "how", "section", "entry", "field", "old value", "new value"]
+OUTSIDE = "found on opening (edited outside bigmip, or not logged at the time)"
+
+
+def _base(notes_path):
+    return notes_path[:-5] if notes_path.lower().endswith(".toml") else notes_path
+
+
+def changes_path(notes_path):
+    return _base(notes_path) + "_changes.csv"
+
+
+def _snapshot_path(notes_path):
+    return _base(notes_path) + "_lastlogged.toml"
+
+
+def _now(t=None):
+    return datetime.datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M:%S") if t else \
+        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _user():
+    try:
+        import getpass
+        return getpass.getuser()
+    except Exception:
+        return "unknown"
+
+
+def _load_quiet(path):
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        return load(path)
+    except (SystemExit, OSError):
+        return None
+
+
+def _s(v):
+    return "" if v is None else str(v).strip()
+
+
+def _items(d, key):
+    v = d.get(key)
+    return [it for it in v if isinstance(it, dict)] if isinstance(v, list) else []
+
+
+def _blank(item, fields):
+    return not any(_s((item or {}).get(f)) for f, _ in fields)
+
+
+def diff(old, new):
+    """[section, entry, field, old value, new value] for every difference between two versions of the notes.
+    List entries are matched by content, so removing antibody 1 of 2 reads as 'removed', not as edits to both."""
+    import difflib
+    old, new, rows = old or {}, new or {}, []
+    for key, label, kind, fields in SECTIONS:
+        lab = label.split(" (")[0]
+        if kind == "text":
+            if _text(old, key).strip() != _text(new, key).strip():
+                rows.append([lab, "", "text", _text(old, key).strip(), _text(new, key).strip()])
+        elif kind == "dict":
+            o, n = old.get(key), new.get(key)
+            o, n = (o if isinstance(o, dict) else {}), (n if isinstance(n, dict) else {})
+            rows += [[lab, "", f, _s(o.get(f)), _s(n.get(f))] for f, _ in fields if _s(o.get(f)) != _s(n.get(f))]
+        elif key == "channels":                   # matched by the image channel name
+            o = {_s(c.get("image_channel")): c for c in _items(old, key)}
+            n = {_s(c.get("image_channel")): c for c in _items(new, key)}
+            for name in list(o) + [k for k in n if k not in o]:
+                for f, _ in fields:
+                    a, b = _s((o.get(name) or {}).get(f)), _s((n.get(name) or {}).get(f))
+                    if f != "image_channel" and a != b:
+                        rows.append([lab, name, f, a, b])
+        else:
+            a = [it for it in _items(old, key) if not _blank(it, fields)]
+            b = [it for it in _items(new, key) if not _blank(it, fields)]
+            sig = lambda it: tuple(_s(it.get(f)) for f, _ in fields)  # noqa: E731
+            for op, i0, i1, j0, j1 in difflib.SequenceMatcher(None, [sig(x) for x in a], [sig(x) for x in b],
+                                                              autojunk=False).get_opcodes():
+                if op == "equal":
+                    continue
+                pairs = min(i1 - i0, j1 - j0) if op == "replace" else 0
+                for k in range(pairs):                   # edited entries
+                    rows += [[lab, f"#{j0 + k + 1}", f, _s(a[i0 + k].get(f)), _s(b[j0 + k].get(f))]
+                             for f, _ in fields if _s(a[i0 + k].get(f)) != _s(b[j0 + k].get(f))]
+                for i in range(i0 + pairs, i1):          # removed entries
+                    rows.append([lab, f"#{i + 1}", "(whole entry removed)", _join(a[i]), ""])
+                for j in range(j0 + pairs, j1):          # added entries
+                    rows += [[lab, f"#{j + 1}", f, "", _s(b[j].get(f))] for f, _ in fields if _s(b[j].get(f))]
+    known = {k for k, _, _, _ in SECTIONS}
+    for key in [k for k in list(old) + list(new) if k not in known]:   # e.g. [file_history] added by rename
+        o, n = old.get(key), new.get(key)
+        o, n = (o if isinstance(o, dict) else {}), (n if isinstance(n, dict) else {})
+        for f in list(o) + [f for f in n if f not in o]:
+            if _s(o.get(f)) != _s(n.get(f)):
+                rows.append([key.replace("_", " "), "", f, _s(o.get(f)), _s(n.get(f))])
+    return rows
+
+
+def _write_log(notes_path, rows):
+    p = changes_path(notes_path)
+    new = not os.path.exists(p)
+    with open(p, "a", newline="", encoding="utf-8-sig" if new else "utf-8") as fh:   # BOM: Excel reads UTF-8
+        w = csv.writer(fh)
+        if new:
+            w.writerow(LOG_COLUMNS)
+        w.writerows(rows)
+
+
+def _commit(notes_path, rows, values):
+    """Append the rows, then remember `values` as the last logged version. If the log can't be written (e.g. open in
+    Excel), the last logged version is kept, so the changes are logged on a later opening. Never raises."""
+    try:
+        if rows:
+            _write_log(notes_path, rows)
+        with open(_snapshot_path(notes_path), "w", encoding="utf-8") as fh:
+            fh.write(f"# bigmip's copy of the last logged version of {os.path.basename(notes_path)}, used to spot "
+                     "edits made outside bigmip.\n# Do not edit this file; edit the notes themselves.\n"
+                     + render(values))
+        return True
+    except OSError as e:
+        print(f"  WARNING: could not update the change log {changes_path(notes_path)} ({e}). Close it if it is open "
+              "(e.g. in Excel); the changes will be logged next time.")
+        return False
+
+
+def track(notes_path, how=OUTSIDE, who="", when=None):
+    """Log differences between the notes file and the last logged version (edits made outside bigmip; rename passes
+    its own `how`). Starts the log for notes that have none. Returns the rows logged. Never raises."""
+    cur = _load_quiet(notes_path)
+    if cur is None:
+        return []
+    snap_p = _snapshot_path(notes_path)
+    if not os.path.exists(snap_p):
+        rows = [[_now(), _user(), "change log started", "", "", "", "",
+                 "earlier changes not recorded; " + completeness(cur)[1]]]
+    else:
+        snap = _load_quiet(snap_p) or {}
+        d = diff(snap, cur)
+        if not d:
+            return []
+        if when is None:
+            when = _now(os.path.getmtime(notes_path)) if how == OUTSIDE else _now()
+        rows = [[when, who or ("" if how == OUTSIDE else _user()), how, *r] for r in d]
+    return rows if _commit(notes_path, rows, cur) else []
+
+
+def log_event(notes_path, how, value):
+    """A row that is not a change, e.g. 'MIP made with these notes'. Never raises."""
+    try:
+        _write_log(notes_path, [[_now(), _user(), how, "", "", "", "", value]])
+    except OSError as e:
+        print(f"  WARNING: could not write to the change log {changes_path(notes_path)} ({e})")
 
 
 # ------------------------------------------------------------------------------------------------- smart options
@@ -483,11 +653,13 @@ def use_notes(image, explicit=None, image_channels=None):
     p = find_notes(image, explicit)
     if not p:
         return None, None, []
+    logged = track(p)
     d = load(p)
     level, msg = completeness(d)
     issues, sugg = check(d, image_channels)
     warn = [f"WARNING: {msg}. Fill them in with:  py -m bigmip.notes \"{image}\""] if level != "ok" else []
-    return d, p, warn + [f"note: {s}" for s in issues + sugg]
+    seen = [f"note: {len(logged)} change(s) made outside bigmip added to the change log {changes_path(p)}"]         if logged and logged[0][2] == OUTSIDE else []
+    return d, p, warn + seen + [f"note: {s}" for s in issues + sugg]
 
 
 # ------------------------------------------------------------------------------------------------- command line
@@ -534,6 +706,9 @@ def main(argv=None):
     if a.check or a.show:
         if not os.path.exists(path):
             sys.exit(f"no notes yet: create them with  py -m bigmip.notes \"{a.target}\"")
+        logged = track(path)
+        if logged and logged[0][2] == OUTSIDE:
+            print(f"{len(logged)} change(s) made outside bigmip added to the change log {changes_path(path)}")
         d = load(path)
         if a.show:
             print(markdown(d))

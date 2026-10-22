@@ -10,9 +10,9 @@ import sys
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from .notes import (DATE_FIELDS, SECTIONS, carry_channels, check, completeness, find_notes, fluorophore_for,
-                    fluorophore_options, load, normalize_date, notes_path_for, save, secondary_target_options,
-                    shows_options)
+from .notes import (DATE_FIELDS, OUTSIDE, SECTIONS, carry_channels, changes_path, check, completeness, find_notes,
+                    fluorophore_for, fluorophore_options, load, normalize_date, notes_path_for, save,
+                    secondary_target_options, shows_options, track)
 
 SUGGEST = {
     "species": ["mouse", "rat", "macaque", "marmoset", "human", "zebrafish"],
@@ -174,6 +174,8 @@ class NotesForm:
         self.extra = {}         # sections not edited here (e.g. file_history), written back unchanged
         self.dirty = False
         self._loading = False
+        self._how = "bigmip app"  # how the next save is described in the change log
+        logged = track(path) if path else []      # edits made outside bigmip since the last logged save
         values = load(path) if path and os.path.exists(path) else {}
         if self.image_channels:
             values["channels"] = carry_channels(values.get("channels"), self.image_channels)
@@ -182,6 +184,9 @@ class NotesForm:
         self.fill(values)
         self.dirty = False
         self.update_status()
+        if logged and logged[0][2] == OUTSIDE:
+            self.status.configure(text=f"{len(logged)} change(s) made outside bigmip since the last save were added "
+                                       "to the change log.  " + self.status.cget("text"), foreground=ACCENT)
 
     # ------------------------------------------------------------------ layout
     def _build(self):
@@ -214,6 +219,7 @@ class NotesForm:
         ttk.Button(bottom, text="Save notes", command=self.save).pack(side="right", padx=(6, 0))
         ttk.Button(bottom, text="Check", command=self.show_problems).pack(side="right", padx=(6, 0))
         ttk.Button(bottom, text="Copy protocol from...", command=self.copy_protocol).pack(side="right", padx=(6, 0))
+        ttk.Button(bottom, text="Change log", command=self.open_log).pack(side="right", padx=(6, 0))
         if not self.embedded:
             r.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -431,10 +437,11 @@ class NotesForm:
                 return False
         d = self.collect()
         try:
-            save(self.path, d, os.path.basename(self.image) if self.image else "")
+            save(self.path, d, os.path.basename(self.image) if self.image else "", how=self._how)
         except OSError as e:
             messagebox.showerror("Histology notes", f"Could not save:\n{e}", parent=self.win)
             return False
+        self._how = "bigmip app"
         self.fill(load(self.path))            # show normalized values (e.g. dates as YYYY-MM-DD)
         self.dirty = False
         self.update_status()
@@ -473,8 +480,30 @@ class NotesForm:
             new["channels"] = carry_channels(old.get("channels"), self.image_channels)
         self.fill(new)
         self._changed()
+        self._how = f"bigmip app (protocol copied from {os.path.basename(src)})"
         self.status.configure(text=f"Protocol copied from {os.path.basename(src)}. Fill in this sample's animal and "
                                    f"dates, then Save.", foreground=ACCENT)
+
+    def open_log(self):
+        p = changes_path(self.path) if self.path else ""
+        if p and os.path.exists(p):
+            open_path(p)
+        else:
+            messagebox.showinfo("Histology notes", "No changes logged yet: the change log starts with the first save "
+                                                   f"(it will be {os.path.basename(p) or 'next to the notes'}).",
+                                parent=self.win)
+
+
+def open_path(p):
+    """Open a file or folder with the system's default program (a .csv opens in Excel)."""
+    if sys.platform.startswith("win"):
+        os.startfile(p)
+    elif sys.platform == "darwin":
+        import subprocess
+        subprocess.Popen(["open", p])
+    else:
+        import subprocess
+        subprocess.Popen(["xdg-open", p])
 
 
 def _dpi_aware():

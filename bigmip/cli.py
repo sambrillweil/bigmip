@@ -239,6 +239,8 @@ def main(argv=None):
             dst = free_name(dst)
             shutil.copy2(notes_path, dst)
             written.append(dst)
+        from .notes import log_event
+        log_event(notes_path, "MIP made with these notes", written[0])
     step(f"done in {hms(time.time() - t_start)}")
     for i in range(len(chans)):
         print(f"  {labels[i]:<44s} display range {ranges[i][0]:.0f}-{ranges[i][1]:.0f}")

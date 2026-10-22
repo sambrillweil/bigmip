@@ -6,8 +6,9 @@
 
 Related files = files in the image's folder, its 'bigmip_output' folder and any --also FOLDER whose names are the
 image name followed by one of bigmip's suffixes (_histology, _MIP..., _metadata, _acquisition_settings). The old name
-is also replaced INSIDE those files when they are text (.toml .md .json .csv .txt). The image data itself is never
-changed, only its file name. A plan is shown and confirmed first; nothing is overwritten.
+is also replaced INSIDE those files when they are text (.toml .md .json .csv .txt), except the notes' change log, which
+keeps the history as it was (the rename itself is logged there). The image data itself is never changed, only its file
+name. A plan is shown and confirmed first; nothing is overwritten.
 """
 import argparse
 import csv
@@ -61,7 +62,7 @@ def plan_rename(image, new_stem, also=()):
 
 
 def _replace_inside(path, old, new):
-    if not path.lower().endswith(TEXT_EXT):
+    if not path.lower().endswith(TEXT_EXT) or path.lower().endswith("_changes.csv"):   # the change log keeps history
         return False
     try:
         with open(path, encoding="utf-8-sig" if path.lower().endswith(".csv") else "utf-8") as fh:
@@ -148,6 +149,10 @@ def do_rename(plan, old_stem, new_stem, assume_yes=False, batch=None):
             print(f"  (could not update the old name inside {n}: {e})")
     if done:      # one log, in the image's folder (the first file of the plan is always the image)
         _log(os.path.dirname(done[0][1]), [[when, o, n, batch] for o, n in done])
+        from .notes import track
+        for _, n in done:   # the image's own notes: the rename is a change (file history) in their change log
+            if n.lower().endswith("_histology.toml") and os.path.dirname(n) == os.path.dirname(done[0][1]):
+                track(n, how=f"renamed {old_stem} -> {new_stem}")
         print(f"Renamed {len(done)} file(s). Undo with:  py -m bigmip.rename \"{done[0][1]}\" --undo")
     if error:
         print("\n" + error)

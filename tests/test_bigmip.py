@@ -330,3 +330,85 @@ def test_rename_reports_problems(tmp_path, monkeypatch):
     done, error = do_rename(plan, old, "c", assume_yes=True)
     assert len(done) == 1 and (tmp_path / "c.ims").exists()
     assert "open in another program" in error and "Undo puts them back" in error
+
+
+def _log_rows(path):
+    import csv
+    with open(path, encoding="utf-8-sig") as fh:
+        return list(csv.DictReader(fh))
+
+
+def test_change_log(tmp_path, monkeypatch):
+    import copy
+    from make_test_data import FILLED_NOTES
+    from bigmip.notes import OUTSIDE, changes_path, load, render, save, track
+    from bigmip.rename import main as rename_main
+    vol = synthetic_volume()
+    img = str(tmp_path / "ID1_25X_s.ims")
+    write_ims(img, vol)
+    f = str(tmp_path / "ID1_25X_s_histology.toml")
+    log = changes_path(f)
+    assert log == str(tmp_path / "ID1_25X_s_histology_changes.csv")
+    d = copy.deepcopy(FILLED_NOTES)
+    d["primary_antibodies"].append({"target": "beta3-tubulin", "host": "guinea pig", "dilution": "1:500"})
+    save(f, d)                                                          # created: every filled field logged
+    rows = _log_rows(log)
+    assert {r["how"] for r in rows} == {"created"} and rows[0]["who"]
+    assert ["Primary antibodies", "#2", "target", "", "beta3-tubulin"] in \
+        [[r["section"], r["entry"], r["field"], r["old value"], r["new value"]] for r in rows]
+    assert save(f, load(f)) is None and len(_log_rows(log)) == len(rows)   # saving unchanged notes logs nothing
+    # an edit in the app
+    d2 = load(f)
+    d2["primary_incubation"]["duration"] = "3 nights"
+    del d2["primary_antibodies"][0]                                     # remove antibody 1 of 2
+    save(f, d2)
+    new = _log_rows(log)[len(rows):]
+    got = [[r["how"], r["section"], r["entry"], r["field"], r["old value"], r["new value"]] for r in new]
+    assert ["bigmip app", "Primary incubation", "", "duration", "4 nights", "3 nights"] in got
+    assert ["bigmip app", "Primary antibodies", "#1", "(whole entry removed)",
+            "target: melanopsin, host: chicken, dilution: 1:10000, catalog: X1", ""] in got
+    assert len(got) == 2                                                # antibody 2 is not reported as edited
+    # an edit in a text editor is found the next time bigmip opens the notes
+    d3 = load(f)
+    d3["mounting"]["medium"] = "Vectashield"
+    with open(f, "w", encoding="utf-8") as fh:
+        fh.write(render(d3))
+    n0 = len(_log_rows(log))
+    logged = track(f)
+    assert [r[2:] for r in logged] == [[OUTSIDE, "Mounting", "", "medium", "ProLong Glass", "Vectashield"]]
+    assert track(f) == [] and len(_log_rows(log)) == n0 + 1             # logged once
+    # a MIP adds a row naming the MIP; the change log is not copied into the output
+    main([img, "--workers", "1", "--no-preview"])
+    last = _log_rows(log)[-1]
+    assert last["how"] == "MIP made with these notes" and last["new value"].endswith("ID1_25X_s_MIP.tif")
+    # rename carries the log and the last-logged copy; old names inside the log are kept; the rename is logged
+    rename_main([img, "--replace", "25X", "63X", "--yes"])
+    log2 = str(tmp_path / "ID1_63X_s_histology_changes.csv")
+    assert os.path.exists(log2) and os.path.exists(str(tmp_path / "ID1_63X_s_histology_lastlogged.toml"))
+    rows2 = _log_rows(log2)
+    assert "ID1_25X_s_MIP.tif" in rows2[-2]["new value"]                 # history unchanged
+    assert rows2[-1]["how"] == "renamed ID1_25X_s -> ID1_63X_s" and rows2[-1]["section"] == "file history"
+    assert not os.path.exists(str(tmp_path / "bigmip_output" / "ID1_63X_s_histology_changes.csv"))
+    # a log that can't be written (e.g. open in Excel) never stops a save; the change is logged later
+    f2 = str(tmp_path / "b_histology.toml")
+    save(f2, {"sample": {"sample_id": "B"}})
+    import bigmip.notes as notes_mod
+    real = notes_mod._write_log
+
+    def locked(*a, **k):
+        raise PermissionError(13, "Permission denied")
+    monkeypatch.setattr(notes_mod, "_write_log", locked)
+    save(f2, {"sample": {"sample_id": "B2"}})
+    assert load(f2)["sample"]["sample_id"] == "B2"
+    monkeypatch.setattr(notes_mod, "_write_log", real)
+    late = track(f2)
+    assert [r[2:] for r in late] == [[OUTSIDE, "Sample and animal", "", "sample_id", "B", "B2"]]
+
+
+def test_change_log_starts_for_existing_notes(tmp_path):
+    from bigmip.notes import changes_path, track
+    f = str(tmp_path / "x_histology.toml")
+    write_notes(f, ["a"])                                               # notes made before the change log existed
+    rows = track(f)
+    assert rows[0][2] == "change log started" and "earlier changes not recorded" in rows[0][7]
+    assert os.path.exists(changes_path(f)) and track(f) == []

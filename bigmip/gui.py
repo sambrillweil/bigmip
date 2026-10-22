@@ -15,8 +15,8 @@ import threading
 import tkinter as tk
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
-from .notes import check, completeness, find_notes, load, notes_path_for
-from .notes_gui import GREEN, GRAY, ORANGE, RED, NotesForm, ScrollFrame, _dpi_aware, apply_style
+from .notes import OUTSIDE, changes_path, check, completeness, find_notes, load, notes_path_for, track
+from .notes_gui import GREEN, GRAY, ORANGE, RED, NotesForm, ScrollFrame, _dpi_aware, apply_style, open_path
 
 SETTINGS = os.path.join(os.path.expanduser("~"), ".bigmip_settings.json")
 
@@ -45,16 +45,6 @@ def find_fiji():
              os.path.join(home, "Downloads", "Fiji.app", "ImageJ-win64.exe"),
              "/Applications/Fiji.app", os.path.join(home, "Applications", "Fiji.app")]
     return next((c for c in cands if os.path.exists(c)), "")
-
-
-def open_path(p):
-    """Open a file or folder with the system's default program."""
-    if sys.platform.startswith("win"):
-        os.startfile(p)
-    elif sys.platform == "darwin":
-        subprocess.Popen(["open", p])
-    else:
-        subprocess.Popen(["xdg-open", p])
 
 
 def python_exe():
@@ -423,6 +413,9 @@ class App:
         p = find_notes(self.image)
         if not p:
             return "none", "none", "histology notes: none yet", 0
+        logged = track(p)                            # edits made outside bigmip go into the change log
+        if logged and logged[0][2] == OUTSIDE:
+            self.log_line(f"{len(logged)} change(s) made outside bigmip added to the change log {changes_path(p)}")
         try:
             d = load(p)
         except SystemExit:
