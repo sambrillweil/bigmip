@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bigmip"
+version = "0.1.0"
+description = "Memory-efficient max-intensity projections of very large .ims / TIFF microscopy stacks, keeping scale and channel colours (Fiji-ready)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "numpy",
+    "h5py",
+    "hdf5plugin",
+    "tifffile",
+    "matplotlib",
+]
+
+[project.optional-dependencies]
+compressed-tiff = ["imagecodecs"]
+test = ["pytest"]
+
+[project.scripts]
+bigmip = "bigmip.cli:main"
+bigmip-meta = "bigmip.metadata:main"
+bigmip-notes = "bigmip.notes:main"
+bigmip-rename = "bigmip.rename:main"
+bigmip-gui = "bigmip.gui:main"
+
+[tool.setuptools]
+packages = ["bigmip"]

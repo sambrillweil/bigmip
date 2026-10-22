@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+# never commit image data or results
+*.ims
+*.tif
+*.tiff
+*.h5
+*.png
+bigmip_output/
+!docs/*.png
