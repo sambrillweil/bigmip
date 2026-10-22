@@ -49,7 +49,8 @@ def write_ome_tiff(path, vol, pixel_um=0.151, z_um=0.972, bgr_colors=True):
     cols = [0xFF0000, 0x00FF00, 0x0000FF][:nc] if bgr_colors else [-16776961, 16711935, 65535][:nc]
     chans = "".join(f'<OME:Channel ID="Channel:{c}" Name="{(405, 488, 561)[c]}_test" Color="{cols[c]}" '
                     f'SamplesPerPixel="1"/>' for c in range(nc))
-    xml = (f'<?xml version="1.0" encoding="UTF-8"?><OME:OME xmlns:OME="http://www.openmicroscopy.org/Schemas/OME/2016-06"{' Creator="Fusion test"' if bgr_colors else ''}>'
+    creator = ' Creator="Fusion test"' if bgr_colors else ""        # (no quotes nested in the f-string: Python 3.11)
+    xml = (f'<?xml version="1.0" encoding="UTF-8"?><OME:OME xmlns:OME="http://www.openmicroscopy.org/Schemas/OME/2016-06"{creator}>'
            f'<OME:Image ID="Image:0"><OME:Pixels DimensionOrder="XYZCT" Type="uint16" SizeX="{nx}" SizeY="{ny}" '
            f'SizeZ="{nz}" SizeC="{nc}" SizeT="1" PhysicalSizeX="{pixel_um}" PhysicalSizeY="{pixel_um}" '
            f'PhysicalSizeZ="{z_um}">{chans}<OME:TiffData/></OME:Pixels></OME:Image></OME:OME>')

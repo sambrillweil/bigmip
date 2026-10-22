@@ -592,7 +592,9 @@ def channel_labels(d, names):
     for n in names:
         c = m.get(n)
         if c and c.get("shows"):
-            out.append(f"{n} | {c['shows']}" + (f" ({c['fluorophore']})" if c.get("fluorophore") else ""))
+            fl = str(c.get("fluorophore") or "").strip()
+            said = fl and fl.lower() in str(c["shows"]).lower()     # 'nuclei (Hoechst 33342)' already names it
+            out.append(f"{n} | {c['shows']}" + (f" ({fl})" if fl and not said else ""))
         else:
             out.append(n)
     return out
