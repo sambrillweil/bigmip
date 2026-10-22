@@ -172,11 +172,19 @@ class App:
         out.pack(fill="x", pady=(0, 10))
         r1 = ttk.Frame(out)
         r1.pack(fill="x", pady=2)
-        ttk.Label(r1, text="Also smaller copies:").pack(side="left")
+        ttk.Label(r1, text="Sizes to write:").pack(side="left")
+        self.full_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(r1, text="full size", variable=self.full_var, command=self.update_command).pack(side="left",
+                                                                                                        padx=6)
         self.ds = {k: tk.BooleanVar(value=(k == 4)) for k in (2, 4, 8)}
         for k, v in self.ds.items():
             ttk.Checkbutton(r1, text=f"{k}x smaller", variable=v, command=self.update_command).pack(side="left",
                                                                                                     padx=6)
+        ttk.Label(out, text="Smaller copies are made from the full-resolution projection (brightest pixel of each "
+                            "block, so thin processes survive). Untick 'full size' to keep only them; the pictures are "
+                            "then made from the largest copy. For a quick look, lower 'Resolution' above instead.",
+                  style="Hint.TLabel", wraplength=900,
+                  justify="left").pack(anchor="w", pady=(0, 4))
         r2 = ttk.Frame(out)
         r2.pack(fill="x", pady=2)
         self.rgb_var = tk.BooleanVar(value=False)
@@ -492,6 +500,8 @@ class App:
         ks = [str(k) for k, v in self.ds.items() if v.get()]
         if ks:
             a += ["--downsample"] + ks
+        if not self.full_var.get():
+            a.append("--no-full")
         if self.rgb_var.get():
             a.append("--rgb")
         try:
@@ -526,6 +536,10 @@ class App:
     def make_mip(self):
         if not getattr(self, "image", None):
             messagebox.showinfo("bigmip", "Choose an image first.", parent=self.root)
+            return
+        if not self.full_var.get() and not any(v.get() for v in self.ds.values()):
+            messagebox.showinfo("bigmip", "Tick at least one size to write (full size, or a smaller copy).",
+                                parent=self.root)
             return
         if self.notes_form and self.notes_form.dirty and self.notes_var.get():
             if messagebox.askyesno("bigmip", "Save the histology notes first (so the MIP includes them)?",

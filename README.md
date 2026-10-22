@@ -80,6 +80,9 @@ On a Mac, the first time, right-click it and choose Open. Or type `py -m bigmip.
 At the top, click **Choose...** and pick your `.ims` or `.tif` file. bigmip shows the image size, pixel size, plane
 step and channels, and how much of its histology notes is filled in. Then work through the four tabs.
 
+The mouse wheel only scrolls the page: it never changes a drop-down or a number box, so scrolling past a field
+can't change it by accident. To change one, click it.
+
 ### Tab 1: Histology notes
 ![Histology notes](docs/app_notes.png)
 
@@ -130,7 +133,11 @@ logged the next time bigmip opens them.
   - Choose the contrast: as stored in the file, automatic, or your own low/high values. Contrast only sets how Fiji
     first displays the image; pixel values are never changed.
 - **Outputs:**
-  - smaller copies (2×, 4×, 8× smaller; each keeps the brightest pixel of every block, so thin processes survive);
+  - which sizes to write: **full size** and/or smaller copies (2×, 4×, 8× smaller; each keeps the brightest pixel
+    of every block, so thin processes survive). Untick **full size** to keep only the smaller copies: they are
+    still made from the full-resolution projection, and the color picture is then made from the largest copy.
+    (For a quick look instead, lower **Resolution**: that reads a smaller version stored in the file, which is
+    much faster, but thin processes can come out dimmer);
   - a flattened color picture for slides, with an optional scale bar;
   - a small preview;
   - **Include the histology notes** (on by default, when the image has notes): channel names like
@@ -224,6 +231,7 @@ Options for `py -m bigmip FILE` (`py -m bigmip --help` lists them all):
 | `--ranges LIST` | Contrast per channel: `auto` or `LOW-HIGH`. | `--ranges "auto,100-800,auto"` |
 | `--auto-ranges` | Ignore the contrast stored in the file. | |
 | `--downsample K ...` | Also write smaller copies. | `--downsample 2 4` |
+| `--no-full` | Don't write the full-size MIP, only the smaller copies (and pictures made from the largest one). | `--no-full --downsample 4` |
 | `--rgb` | Also write the flattened color picture. | |
 | `--scalebar UM` | Scale bar of UM microns on the pictures. | `--scalebar 100` |
 | `--gamma LIST` | Per-channel gamma for the pictures (below 1 brightens dim structures). | `--gamma 1,1,0.7` |

@@ -64,11 +64,35 @@ def apply_style(root):
     st.configure("Hint.TLabel", foreground=GRAY, font=("Segoe UI", 9))
     st.configure("TNotebook.Tab", padding=(12, 6), font=("Segoe UI", 10))
     st.configure("Big.TButton", font=("Segoe UI", 11, "bold"), padding=(14, 6))
+    # The mouse wheel only ever scrolls the page. Tk's own drop-downs and number boxes change their value on the
+    # wheel, which silently changed fields while scrolling past them.
+    for cls in ("TCombobox", "TSpinbox", "Spinbox"):
+        for seq in ("<MouseWheel>", "<Shift-MouseWheel>", "<Button-4>", "<Button-5>"):
+            root.bind_class(cls, seq, "")
+    for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+        root.bind_all(seq, _wheel)
     return st
 
 
+def _wheel(e):
+    """Scroll the scrollable page under the pointer (lists and text boxes scroll themselves)."""
+    try:
+        w = e.widget.winfo_containing(e.x_root, e.y_root)
+    except (AttributeError, KeyError, tk.TclError):      # e.g. the open list of a drop-down: it scrolls itself
+        return
+    while w is not None:
+        if isinstance(w, (tk.Text, tk.Listbox, ttk.Treeview)):
+            return
+        if isinstance(w, ScrollFrame):
+            num = getattr(e, "num", 0)
+            n = -1 if num == 4 else 1 if num == 5 else (int(-e.delta / 120) or (-1 if e.delta > 0 else 1))
+            w.canvas.yview_scroll(n, "units")
+            return
+        w = w.master
+
+
 class ScrollFrame(ttk.Frame):
-    """A frame with a vertical scrollbar (for long tabs)."""
+    """A frame with a vertical scrollbar (for long tabs). The mouse wheel scrolls it (see _wheel)."""
 
     def __init__(self, master):
         super().__init__(master)
@@ -81,11 +105,6 @@ class ScrollFrame(ttk.Frame):
         self.canvas.configure(yscrollcommand=sb.set)
         self.canvas.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-        self.canvas.bind("<Enter>", lambda e: self.canvas.bind_all("<MouseWheel>", self._wheel))
-        self.canvas.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"))
-
-    def _wheel(self, e):
-        self.canvas.yview_scroll(int(-e.delta / 120) or (-1 if e.delta > 0 else 1), "units")
 
 
 class DatePicker(tk.Toplevel):

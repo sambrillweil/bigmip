@@ -258,6 +258,8 @@ def test_app_notes_optional(tmp_path, tk_root):
     assert "--skip-notes" not in app.mip_args()
     app.notes_var.set(False)
     assert app.mip_args()[-1] == "--skip-notes"
+    app.full_var.set(False)
+    assert "--no-full" in app.mip_args()
     write_notes(str(tmp_path / "s_histology.toml"), ["405_ch", "488_ch", "561_ch"],
                 primary_incubation__duration="four")
     app.set_image(p)
@@ -412,3 +414,32 @@ def test_change_log_starts_for_existing_notes(tmp_path):
     rows = track(f)
     assert rows[0][2] == "change log started" and "earlier changes not recorded" in rows[0][7]
     assert os.path.exists(changes_path(f)) and track(f) == []
+
+
+def test_no_full_size(tmp_path):
+    vol = synthetic_volume()
+    p = str(tmp_path / "s.ims")
+    write_ims(p, vol)
+    out = tmp_path / "o"
+    with pytest.raises(SystemExit):                                     # nothing would be written
+        main([p, "-o", str(out), "--no-full", "--skip-notes"])
+    main([p, "-o", str(out), "--no-full", "--downsample", "4", "2", "--rgb", "--workers", "1", "--skip-notes"])
+    assert not (out / "s_MIP.tif").exists()
+    small, _, px2 = _read_composite(str(out / "s_MIP_x2smaller.tif"))
+    assert np.array_equal(small, vol.max(1)[:, :vol.shape[2] // 2 * 2, :vol.shape[3] // 2 * 2]
+                          .reshape(3, vol.shape[2] // 2, 2, vol.shape[3] // 2, 2).max((2, 4)))   # block max
+    rgb = tifffile.imread(str(out / "s_MIP_x2smaller_RGB.tif"))         # picture from the largest copy
+    assert rgb.shape[:2] == small.shape[1:] and not (out / "s_MIP_RGB.tif").exists()
+
+
+def test_wheel_never_changes_fields(tk_root):
+    from tkinter import ttk
+    from bigmip.notes_gui import apply_style
+    apply_style(tk_root)
+    for cls in ("TCombobox", "TSpinbox"):
+        assert tk_root.bind_class(cls, "<MouseWheel>") == ""
+    cb = ttk.Combobox(tk_root, values=["a", "b", "c"])
+    cb.pack()
+    cb.set("a")
+    cb.event_generate("<MouseWheel>", delta=-120, when="now")
+    assert cb.get() == "a"

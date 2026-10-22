@@ -47,6 +47,9 @@ def build_parser():
                    help="ignore display ranges stored in the file and compute them from the projection")
     p.add_argument("--downsample", type=int, nargs="*", default=[], metavar="K",
                    help="also write copies shrunk K-fold (max of each KxK block), e.g. --downsample 2 4")
+    p.add_argument("--no-full", action="store_true",
+                   help="do not write the full-size MIP: only the smaller copies (--downsample, still made from the "
+                        "full-resolution projection) and the pictures, which then come from the largest copy")
     p.add_argument("--rgb", action="store_true", help="also write a flattened RGB TIFF + PNG (for slides / figures)")
     p.add_argument("--gamma", help="per-channel gamma for --rgb/preview, e.g. '1,1,0.7,1' (<1 brightens dim parts)")
     p.add_argument("--scalebar", type=float, default=0, metavar="UM",
@@ -111,6 +114,8 @@ def main(argv=None):
     path = os.path.abspath(a.file)
     if not os.path.exists(path):
         sys.exit(f"file not found: {path}")
+    if a.no_full and not any(k > 1 for k in a.downsample):
+        sys.exit("--no-full writes only the smaller copies: add at least one, e.g. --downsample 4")
     t_start = time.time()
     step(f"reading the file header: {path}")
     st = open_stack(path, a.level)
@@ -213,23 +218,32 @@ def main(argv=None):
     px = m["pixel_um"]
     labels = channel_labels(notes, names) if notes else names
     info = summary_text(notes) if notes else None
-    written = []
-    step(f"writing the projection ({proj.nbytes / 2**30:.2f} GB) to {outdir}")
-    written.append(write_composite(os.path.join(outdir, f"{stem}_{tag}.tif"), proj, labels, colors, ranges, px, info))
+    written, small = [], {}
+    if a.no_full:
+        step(f"full-size MIP not written (--no-full); writing the smaller copies to {outdir}")
+    else:
+        step(f"writing the projection ({proj.nbytes / 2**30:.2f} GB) to {outdir}")
+        written.append(write_composite(os.path.join(outdir, f"{stem}_{tag}.tif"), proj, labels, colors, ranges, px,
+                                       info))
     for k in a.downsample:
         if k > 1:
             step(f"writing the {k}x smaller copy")
-            pk = (px[0] * k, px[1] * k) if px[0] else px
+            small[k] = (block_max(proj, k), (px[0] * k, px[1] * k) if px[0] else px)
             written.append(write_composite(os.path.join(outdir, f"{stem}_{tag}_x{k}smaller.tif"),
-                                           block_max(proj, k), labels, colors, ranges, pk, info))
+                                           small[k][0], labels, colors, ranges, small[k][1], info))
     if a.rgb or not a.no_preview:
         step("rendering the color image" + (" (RGB TIFF + PNG + preview)" if a.rgb else " (preview)"))
-        rgb = render_rgb(proj, colors, ranges, gammas)
-        if a.scalebar and px[0]:
-            add_scalebar(rgb, a.scalebar, px[0])
+        if a.no_full:              # pictures from the largest smaller copy, never at full size
+            k = min(small)
+            pic, ppx, ptag = small[k][0], small[k][1], f"{tag}_x{k}smaller"
+        else:
+            pic, ppx, ptag = proj, px, tag
+        rgb = render_rgb(pic, colors, ranges, gammas)
+        if a.scalebar and ppx[0]:
+            add_scalebar(rgb, a.scalebar, ppx[0])
         if a.rgb:
-            written.append(write_rgb(os.path.join(outdir, f"{stem}_{tag}_RGB.tif"), rgb, px))
-            written.append(write_preview(os.path.join(outdir, f"{stem}_{tag}_RGB.png"), rgb, max_side=10**9))
+            written.append(write_rgb(os.path.join(outdir, f"{stem}_{ptag}_RGB.tif"), rgb, ppx))
+            written.append(write_preview(os.path.join(outdir, f"{stem}_{ptag}_RGB.png"), rgb, max_side=10**9))
         if not a.no_preview:
             written.append(write_preview(os.path.join(outdir, f"{stem}_{tag}_preview.png"), rgb))
     if notes_path:
