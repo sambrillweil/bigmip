@@ -180,7 +180,12 @@ def main(argv=None):
         bar.update(i, 1.0, label, force=True)
     bar.done()
     st.close()
-    step(f"projection done in {hms(time.time() - t0)} ({gb / max(time.time() - t0, 1e-6) * 1024:.0f} MB/s)")
+    rate = gb / max(time.time() - t0, 1e-6) * 1024
+    step(f"projection done in {hms(time.time() - t0)} ({rate:.0f} MB/s)")
+    if rate < 150 and time.time() - t0 > 60:
+        print("  note: the file was read slowly. If it is on a network or cloud drive (Google Drive, a server), copy it "
+              "to a local disk first, or mark the folder 'Available offline' in Google Drive -- later runs are then "
+              "several times faster.")
 
     # ---- display ranges: file -> auto -> explicit overrides
     ranges = []
