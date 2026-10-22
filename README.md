@@ -51,15 +51,15 @@ Documents folder). There is no installer: start it by double-clicking `Fiji.app`
 the `Fiji.app` folder (Windows). Fiji already includes BigDataViewer.
 
 ### 1c. Install GitHub Desktop
-bigmip is downloaded and kept up to date with **GitHub Desktop** (free): <https://desktop.github.com>.
-1. You need a free GitHub account (<https://github.com/signup>). Send your GitHub username to Sam Brill-Weil to get
-   access, then accept the invitation that arrives by email.
-2. Install GitHub Desktop, open it and sign in with that account.
+Get bigmip with **GitHub Desktop** (free): <https://desktop.github.com>. Updates are then one click (step 1f).
+Please don't use GitHub's **Download ZIP**: a ZIP copy can't be updated, so it quietly goes out of date.
+
+Install GitHub Desktop and open it. Signing in is optional: bigmip is public, so you can skip that step (or sign in
+with a free GitHub account if you have one).
 
 ### 1d. Get bigmip
-In GitHub Desktop: **File › Clone repository**. On the **GitHub.com** tab, pick **sambrillweil/bigmip** (or, on the
-**URL** tab, paste `https://github.com/sambrillweil/bigmip`). Choose where to keep it (e.g.
-`Documents\GitHub\bigmip`) and click **Clone**.
+In GitHub Desktop: **File › Clone repository › URL**, paste `https://github.com/sambrillweil/bigmip`, choose where to
+keep it (e.g. `Documents\GitHub\bigmip`) and click **Clone**.
 
 ### 1e. Install bigmip
 In GitHub Desktop, with bigmip as the current repository: **Repository › Open in Command Prompt** (Windows; it may
@@ -82,10 +82,9 @@ When bigmip is updated:
 
 If an update says it needs new packages, run the install line from 1e again (it's harmless to repeat at any time).
 
-Only ever **Fetch** and **Pull**: never click **Commit** or **Push** in GitHub Desktop for bigmip, and don't edit
-the files in the bigmip folder. If GitHub Desktop lists changed files under **Changes**, right-click them,
-choose **Discard changes**, then pull. bigmip never keeps your images, notes or MIPs in this folder, so updating never
-touches your data.
+Only **Fetch** and **Pull** are needed (you can't push to bigmip). Don't edit the files in the bigmip folder: if
+GitHub Desktop lists changed files under **Changes**, right-click them, choose **Discard changes**, then pull.
+bigmip never keeps your images, notes or MIPs in this folder, so updating never touches your data.
 
 ---
 
