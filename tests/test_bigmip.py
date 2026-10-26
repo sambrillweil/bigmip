@@ -108,6 +108,15 @@ def test_color_helpers():
     assert color_from_ome(219, bgr=True) == (219 / 255, 0.0, 0.0)
     assert parse_color_list("405=cyan", ["405_DAPI", "488_GFP"]) == {0: (0.0, 1.0, 1.0)}
     assert parse_color_list("blue,#ff8000", ["a", "b"])[1] == (1.0, 128 / 255, 0.0)
+    from bigmip.colors import display_color, is_far_red
+    assert is_far_red("638_Cy5_CF40_Zyla") and is_far_red("Alexa 647") and is_far_red("Cy5")
+    assert not is_far_red("405_DAPI_CF40_Zyla") and not is_far_red("561_RFP_CF40_Zyla")
+    assert display_color("638_Cy5_CF40_Zyla", (219 / 255, 0.0, 0.0)) == (1, 0, 1)     # Fusion's red -> magenta
+    assert display_color("Alexa 647", None) == (1, 0, 1)
+    assert display_color("638_Cy5", (0.5, 0.5, 0.5)) == (0.5, 0.5, 0.5)              # a chosen color is kept
+    assert display_color("561_RFP_CF40_Zyla", (1.0, 200 / 255, 0.0)) == (1, 0, 0)    # Fusion's orange -> red
+    assert display_color("561_RFP", (0.5, 0.5, 0.5)) == (0.5, 0.5, 0.5) and display_color("mCherry", None) == (1, 0, 0)
+    assert display_color("488_GFP", (0.16, 1.0, 0.0)) == (0.16, 1.0, 0.0)            # other channels: the file's color
 
 
 def test_metadata_report(tmp_path):
@@ -548,5 +557,6 @@ def test_new_file_resets_the_app(tmp_path, tk_root):
     app.log_line("old run output")
     app.set_image(b)
     assert app.full_var.get() and not app.rgb_var.get() and app.bar_var.get() == "0" and app.rn_a.get() == ""
+    assert app.ds[2].get() and not app.ds[4].get() and not app.ds[8].get()          # default: a 2x smaller copy
     assert app.out_var.get() == default_outdir(b) and "-o" not in app.mip_args()
     assert "old run output" not in app.log.get("1.0", "end")

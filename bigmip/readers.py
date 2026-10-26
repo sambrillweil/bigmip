@@ -30,7 +30,7 @@ def _retry(read, what):
                               f"cloud drive (e.g. Google Drive), copy it to a local disk and run again.") from e
             time.sleep(2 * (attempt + 1))
 
-from .colors import color_from_ome, color_from_wavelength
+from .colors import color_from_ome, display_color
 
 
 # ----------------------------------------------------------------------------------------------- Imaris (.ims)
@@ -128,7 +128,7 @@ class ImsStack:
             if ci is not None and _attr(ci, "Color"):
                 vals = [float(v) for v in re.findall(r"[-+0-9.eE]+", _attr(ci, "Color"))[:3]]
                 col = tuple(vals) if len(vals) == 3 and max(vals) > 0 else None
-            colors.append(col or color_from_wavelength(name))
+            colors.append(display_color(name, col))
             rng = None
             if ci is not None and _attr(ci, "ColorRange"):
                 vals = [float(v) for v in re.findall(r"[-+0-9.eE]+", _attr(ci, "ColorRange"))[:2]]
@@ -209,7 +209,7 @@ class TiffStack:
             col = color_from_ome(ome_cols[c], bgr) if c < len(ome_cols) else None
             if col is None and ij.get("LUTs") is not None and c < len(ij["LUTs"]):
                 lut = np.asarray(ij["LUTs"][c]); col = tuple(lut[:, -1] / 255.0)
-            colors.append(col or color_from_wavelength(names[c]))
+            colors.append(display_color(names[c], col))
         ranges = [None] * self.nc
         if ij.get("Ranges") and len(ij["Ranges"]) >= 2 * self.nc:
             r = ij["Ranges"]; ranges = [(float(r[2 * c]), float(r[2 * c + 1])) for c in range(self.nc)]

@@ -216,7 +216,7 @@ overwritten: if a file already exists, a new one is written with `_2`, `_3`, ...
 | File | What it is |
 |---|---|
 | `NAME_MIP.tif` | The projection: all channels, full resolution, original pixel values (16-bit stays 16-bit), with colors, names, contrast, scale and the histology notes. **Use this one for analysis and figures.** In Fiji, channel names read like `638_Cy5 | melanopsin (Alexa 647)`, and **Image › Show Info** shows the notes. |
-| `NAME_MIP_x4smaller.tif` | The same, 4× smaller (brightest pixel of each 4×4 block). Opens instantly. |
+| `NAME_MIP_x2smaller.tif` | The same, 2× smaller (brightest pixel of each 2×2 block; made by default in the app). Opens quickly. 4× and 8× smaller copies are options. |
 | `NAME_MIP_RGB.tif` / `.png` | One flattened color picture (8-bit) for slides, optionally with a scale bar. |
 | `NAME_MIP_preview.png` | A small picture for a quick look. |
 | `NAME_histology.toml` | A copy of the notes the MIP was made with. |
@@ -351,7 +351,10 @@ It opens directly, with no conversion.
   resolution tags). It is written as ImageJ calibration in µm.
 - **Colors** come from the file: Imaris channel `Color`, OME `Channel Color` (Andor Fusion writes these in BGR
   order, which is detected), or ImageJ LUTs. A channel with no color gets one guessed from the wavelength in its
-  name. Colors are written as ImageJ LUTs, so Fiji shows them automatically.
+  name. Colors are written as ImageJ LUTs, so Fiji shows them automatically. Two exceptions, as the usual
+  convention: **red** channels (lasers 530–619 nm, e.g. 561/568/594, RFP, tdTomato, mCherry, Cy3) start pure **red**,
+  even if the microscope stored orange or yellow, and **far-red** channels (620 nm and up, e.g. 638/640/647, Cy5,
+  Alexa 647) start **magenta**. A stored color that isn't red/orange/yellow (e.g. one chosen in Fiji) is kept.
 - **Contrast** comes from the file when stored (Imaris `ColorRange`). Otherwise it's the 0.5th–99.9th percentile of
   the non-zero pixels; zero is excluded because stitched data are zero outside the imaged tiles. It never changes
   pixel values.

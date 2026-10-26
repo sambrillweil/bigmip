@@ -209,7 +209,7 @@ class App:
         self.full_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(r1, text="full size", variable=self.full_var, command=self.update_command).pack(side="left",
                                                                                                         padx=6)
-        self.ds = {k: tk.BooleanVar(value=(k == 4)) for k in (2, 4, 8)}
+        self.ds = {k: tk.BooleanVar(value=(k == 2)) for k in (2, 4, 8)}
         for k, v in self.ds.items():
             ttk.Checkbutton(r1, text=f"{k}x smaller", variable=v, command=self.update_command).pack(side="left",
                                                                                                     padx=6)
@@ -430,7 +430,7 @@ class App:
         self.zinfo.configure(text=f"of {Z}")
         self.out_var.set(default_outdir(p))          # one output folder per image
         for k, v in self.ds.items():                 # options back to their defaults (Fiji path and workers stay)
-            v.set(k == 4)
+            v.set(k == 2)
         for var, val in ((self.full_var, True), (self.rgb_var, False), (self.bar_var, "0"), (self.prev_var, True),
                          (self.notes_var, True), (self.rn_mode, "new"), (self.rn_a, ""), (self.rn_b, "")):
             var.set(val)

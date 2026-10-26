@@ -11,7 +11,7 @@ NAMED = {
 }
 
 # Used only when a file stores no usable color: typical color by excitation laser line (nm).
-BY_WAVELENGTH = [(420, "blue"), (500, "green"), (580, "orange"), (620, "red"), (10_000, "magenta")]
+BY_WAVELENGTH = [(420, "blue"), (530, "green"), (620, "red"), (10_000, "magenta")]
 
 
 def parse_color(text):
@@ -35,6 +35,40 @@ def color_from_wavelength(text):
         if nm < limit:
             return NAMED[name]
     return None
+
+
+RED_NM, FAR_RED_NM = 530, 620   # laser lines 530-619 nm (532, 561, 568, 594) = red; 620 nm and up = far red
+
+
+def _band(name):
+    """'red', 'far red' or None, from the laser line in the channel name (or a dye / protein name)."""
+    t = (name or "").lower()
+    m = re.search(r"(\d{3})", t)
+    nm = int(m.group(1)) if m else None
+    if (nm and FAR_RED_NM <= nm < 1000) or re.search(r"cy5|far[\s_-]*red|draq5", t):
+        return "far red"
+    if (nm and RED_NM <= nm < FAR_RED_NM) or re.search(r"rfp|cherry|tomato|dsred|cy3|texas", t):
+        return "red"
+    return None
+
+
+def is_far_red(name):
+    """'638_Cy5_CF40_Zyla', 'Alexa 647', 'Cy5', 'far red' -> True."""
+    return _band(name) == "far red"
+
+
+def display_color(name, stored):
+    """The color a channel starts with: the file's own, or a guess from the wavelength when it has none, except that
+    red channels start pure red (microscope software often stores orange / yellow) and far-red channels magenta (the
+    usual convention, distinct from red). A stored color that isn't red / orange / yellow, e.g. one chosen in Fiji, is
+    kept."""
+    band = _band(name)
+    warm = stored is None or (stored[0] >= 0.5 and stored[2] <= 0.3)
+    if band == "far red" and (stored is None or (warm and stored[1] <= 0.3)):
+        return NAMED["magenta"]
+    if band == "red" and warm:
+        return NAMED["red"]
+    return stored or color_from_wavelength(name)
 
 
 def color_from_ome(value, bgr=False):
