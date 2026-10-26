@@ -4,8 +4,9 @@
   bigmip-rename IMAGE [IMAGE ...] --replace OLD NEW    e.g.  --replace 25X 63X   (wildcards allowed: "D:\\x\\*25X*.ims")
   bigmip-rename IMAGE --undo                    reverse the last rename of this image (from rename_log.csv)
 
-Related files = files in the image's folder, its 'bigmip_output' folder and any --also FOLDER whose names are the
-image name followed by one of bigmip's suffixes (_histology, _MIP..., _metadata, _acquisition_settings). The old name
+Related files = files in the image's folder, its own output folder (NAME_bigmip_output, which is renamed too), an older
+shared 'bigmip_output' folder and any --also FOLDER whose names are the image name followed by one of bigmip's suffixes
+(_histology, _MIP..., _metadata, _acquisition_settings). The old name
 is also replaced INSIDE those files when they are text (.toml .md .json .csv .txt), except the notes' change log, which
 keeps the history as it was (the rename itself is logged there). The image data itself is never changed, only its file
 name. A plan is shown and confirmed first; nothing is overwritten.
@@ -16,6 +17,8 @@ import datetime
 import glob
 import os
 import sys
+
+from .output import OUTDIR_SUFFIX
 
 SUFFIXES = ("_histology", "_MIP", "_metadata", "_acquisition_settings")
 TEXT_EXT = (".toml", ".md", ".json", ".csv", ".txt")
@@ -33,9 +36,13 @@ def split_stem(name):
 
 
 def related_files(image, also=()):
+    """(files, stem, own output folder or None). Files are looked for in the image's folder, its own output folder
+    (NAME_bigmip_output), an older shared 'bigmip_output' folder and any `also` folders."""
     folder = os.path.dirname(os.path.abspath(image))
     stem, _ = split_stem(os.path.basename(image))
-    dirs = [folder, os.path.join(folder, "bigmip_output")] + [os.path.abspath(d) for d in also]
+    own = [os.path.join(folder, s + OUTDIR_SUFFIX) for s in (stem, stem + ".ome")]
+    dirs = [folder, *own, os.path.join(folder, "bigmip_output")] + [os.path.abspath(d) for d in also]
+    dirs = list({os.path.normcase(os.path.abspath(d)): os.path.abspath(d) for d in dirs}.values())
     found = [os.path.abspath(image)]
     for d in dirs:
         if not os.path.isdir(d):
@@ -49,13 +56,15 @@ def related_files(image, also=()):
                 if s.startswith(prefix) and any(s[len(prefix):].startswith(suf) for suf in SUFFIXES):
                     found.append(p)
                     break
-    return found, stem
+    return found, stem, next((d for d in own if os.path.isdir(d)), None)
 
 
 def plan_rename(image, new_stem, also=()):
-    files, old_stem = related_files(image, also)
+    """[(old, new), ...]: the image first, then its files; the image's own output folder last (after the files in it,
+    which are renamed in place)."""
+    files, old_stem, own = related_files(image, also)
     plan = []
-    for p in files:
+    for p in files + ([own] if own else []):
         d, name = os.path.split(p)
         plan.append((p, os.path.join(d, new_stem + name[len(old_stem):])))
     return plan, old_stem
@@ -111,13 +120,14 @@ def _short(path, base):
         return path
 
 
-def do_rename(plan, old_stem, new_stem, assume_yes=False, batch=None):
-    """Rename the files in `plan` (the image first). Returns (done, error): the renames made, and an explanation if
-    something failed (renaming stops at the first failure; Undo puts back what was done)."""
+def do_rename(plan, old_stem, new_stem, assume_yes=False, batch=None, log_dir=None, skip_missing=False):
+    """Rename the files / folders in `plan`, in order (a rename: the image first). Returns (done, error): the renames
+    made, and an explanation if something failed (renaming stops at the first failure; Undo puts back what was done).
+    log_dir = the image's folder (default: the folder of the first entry). skip_missing: skip entries that are gone."""
     clashes = [n for _, n in plan if os.path.exists(n)]
     if clashes:
         return [], "These new names already exist, so nothing was renamed:\n" + "\n".join(f"  {c}" for c in clashes)
-    base = os.path.dirname(plan[0][0])
+    base = log_dir = log_dir or os.path.dirname(plan[0][0])
     print(f"Rename '{old_stem}'  ->  '{new_stem}'  ({len(plan)} file(s)):")
     for o, n in plan:
         print(f"  {_short(o, base)}\n      -> {os.path.basename(n)}")
@@ -130,6 +140,9 @@ def do_rename(plan, old_stem, new_stem, assume_yes=False, batch=None):
     batch = batch or when
     done, error = [], None
     for o, n in plan:
+        if skip_missing and not os.path.exists(o):
+            print(f"  (skipped, no longer there: {o})")
+            continue
         try:
             os.rename(o, n)
             done.append((o, n))
@@ -141,19 +154,20 @@ def do_rename(plan, old_stem, new_stem, assume_yes=False, batch=None):
                      + (f"\n{len(done)} file(s) were renamed before this; Undo puts them back." if done
                         else "\nNothing was renamed."))
             break
-    for _, n in done:
-        try:
-            _replace_inside(n, old_stem, new_stem)
-            _note_history(n, old_stem, when)
-        except OSError as e:
-            print(f"  (could not update the old name inside {n}: {e})")
-    if done:      # one log, in the image's folder (the first file of the plan is always the image)
-        _log(os.path.dirname(done[0][1]), [[when, o, n, batch] for o, n in done])
+        if os.path.isfile(n):     # now, while the file is here (its folder may be renamed later in the plan)
+            try:
+                _replace_inside(n, old_stem, new_stem)
+                _note_history(n, old_stem, when)
+            except OSError as e:
+                print(f"  (could not update the old name inside {n}: {e})")
+    if done:      # one log, in the image's folder
+        _log(log_dir, [[when, o, n, batch] for o, n in done])
         from .notes import track
         for _, n in done:   # the image's own notes: the rename is a change (file history) in their change log
-            if n.lower().endswith("_histology.toml") and os.path.dirname(n) == os.path.dirname(done[0][1]):
+            if n.lower().endswith("_histology.toml") and os.path.dirname(n) == log_dir:
                 track(n, how=f"renamed {old_stem} -> {new_stem}")
-        print(f"Renamed {len(done)} file(s). Undo with:  py -m bigmip.rename \"{done[0][1]}\" --undo")
+        print(f"Renamed {len(done)} item(s)." + ("" if str(batch).startswith("undo of") else
+                                                 f" Undo with:  py -m bigmip.rename \"{done[0][1]}\" --undo"))
     if error:
         print("\n" + error)
     return done, error
@@ -173,8 +187,9 @@ def undo(image, assume_yes=False):
     entries = [r for r in rows if r["batch"] == batch]
     old_stem = split_stem(os.path.basename(next(r for r in entries if os.path.abspath(r["new_path"]) == target)["old_path"]))[0]
     new_stem = split_stem(os.path.basename(image))[0]
-    plan = [(r["new_path"], r["old_path"]) for r in entries if os.path.exists(r["new_path"])]
-    return do_rename(plan, new_stem, old_stem, assume_yes=assume_yes, batch=f"undo of {batch}")
+    plan = [(r["new_path"], r["old_path"]) for r in reversed(entries)]   # reverse order: a renamed folder goes back first
+    return do_rename(plan, new_stem, old_stem, assume_yes=assume_yes, batch=f"undo of {batch}", log_dir=folder,
+                     skip_missing=True)
 
 
 def main(argv=None):

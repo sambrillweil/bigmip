@@ -9,6 +9,7 @@ background; the exact command is shown in the window, so anything done here can 
 import json
 import os
 import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -17,6 +18,20 @@ from tkinter import colorchooser, filedialog, messagebox, ttk
 
 from .notes import OUTSIDE, changes_path, check, completeness, find_notes, load, notes_path_for, track
 from .notes_gui import GREEN, GRAY, ORANGE, RED, NotesForm, ScrollFrame, _dpi_aware, apply_style, open_path
+from .output import default_outdir
+
+
+def kill_tree(proc):
+    """End a run and everything it started (its parallel workers too, which proc.terminate() would leave behind)."""
+    if proc is None or proc.poll() is not None:
+        return
+    if sys.platform.startswith("win"):
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True, creationflags=0x08000000)
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)          # the run is started in its own process group
+        except OSError:
+            proc.terminate()
 
 SETTINGS = os.path.join(os.path.expanduser("~"), ".bigmip_settings.json")
 
@@ -75,9 +90,27 @@ class App:
         root.minsize(900, 680)
         apply_style(root)
         self._build()
+        root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(100, self._poll)
         if image:
             self.set_image(image)
+
+    def close(self):
+        """Closing the window ends a running MIP (and its workers) and offers to save unsaved notes."""
+        if self.proc and not messagebox.askyesno("bigmip", f"'{self.what}' is still running. Stop it and close?",
+                                                 icon="warning", parent=self.root):
+            return
+        if not self._notes_saved_or_dropped():
+            return
+        kill_tree(self.proc)
+        self.root.destroy()
+
+    def _notes_saved_or_dropped(self):
+        """Unsaved notes: save them, drop them, or cancel (returns False)."""
+        if not (self.notes_form and self.notes_form.dirty):
+            return True
+        ans = messagebox.askyesnocancel("bigmip", "Save the changes to the histology notes?", parent=self.root)
+        return ans is not None and (not ans or self.notes_form.save())
 
     # ================================================================== layout
     def _build(self):
@@ -347,9 +380,17 @@ class App:
             self.set_image(p)
 
     def set_image(self, p):
+        """Open an image. Everything from the previous image is reset: options, progress, log, rename fields."""
         p = os.path.abspath(p.strip().strip('"'))
         if not os.path.isfile(p):
             messagebox.showerror("bigmip", f"File not found:\n{p}", parent=self.root)
+            return
+        if self.proc:
+            if not messagebox.askyesno("bigmip", f"'{self.what}' is still running for\n{self.image}\n\nStop it and "
+                                                 "open the new file?", icon="warning", parent=self.root):
+                return
+            self._end_run("stopped (another file was opened)")
+        if self.image and os.path.abspath(self.image) != p and not self._notes_saved_or_dropped():
             return
         from .readers import open_stack
         self.root.configure(cursor="watch")
@@ -387,9 +428,20 @@ class App:
         self.z0_var.set("1")
         self.z1_var.set(str(Z))
         self.zinfo.configure(text=f"of {Z}")
-        self.out_var.set(os.path.join(os.path.dirname(p), "bigmip_output"))
+        self.out_var.set(default_outdir(p))          # one output folder per image
+        for k, v in self.ds.items():                 # options back to their defaults (Fiji path and workers stay)
+            v.set(k == 4)
+        for var, val in ((self.full_var, True), (self.rgb_var, False), (self.bar_var, "0"), (self.prev_var, True),
+                         (self.notes_var, True), (self.rn_mode, "new"), (self.rn_a, ""), (self.rn_b, "")):
+            var.set(val)
         self._build_channel_rows()
         self.rn_new.set(os.path.splitext(os.path.basename(p))[0])
+        self.rn_tree.delete(*self.rn_tree.get_children())
+        self.prog.configure(value=0)
+        self.prog_label.configure(text="", foreground="")
+        self.log.configure(state="normal")
+        self.log.delete("1.0", "end")
+        self.log.configure(state="disabled")
         self._load_notes()
         self.fiji_btn.configure(state="disabled")
         self.outputs = []
@@ -511,7 +563,7 @@ class App:
             pass
         if not self.prev_var.get():
             a.append("--no-preview")
-        default_out = os.path.join(os.path.dirname(self.image), "bigmip_output")
+        default_out = default_outdir(self.image)
         if os.path.abspath(self.out_var.get() or default_out) != os.path.abspath(default_out):
             a += ["-o", self.out_var.get()]
         if self.image.lower().endswith(".ims"):
@@ -559,12 +611,13 @@ class App:
         if self.proc:
             return
         env = dict(os.environ, BIGMIP_GUI="1", PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
-        flags = 0x08000000 if sys.platform.startswith("win") else 0     # no extra console window
+        win = sys.platform.startswith("win")
         self.log_line(f"> py {' '.join(args)}")
         try:
             self.proc = subprocess.Popen([python_exe()] + args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                          text=True, encoding="utf-8", errors="replace", bufsize=1, env=env,
-                                         creationflags=flags)
+                                         creationflags=0x08000000 if win else 0,      # no extra console window
+                                         start_new_session=not win)                  # so Stop can end its workers
         except OSError as e:
             messagebox.showerror("bigmip", f"Could not start Python:\n{e}", parent=self.root)
             return
@@ -573,23 +626,33 @@ class App:
         self.meta_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
         self.prog.configure(value=0)
-        self.prog_label.configure(text=f"{what}...")
+        self.prog_label.configure(text=f"{what}...", foreground="")
 
-        def reader(p=self.proc):
+        def reader(p=self.proc):        # messages carry their run, so a stopped run's last lines are ignored
             for line in p.stdout:
-                self.q.put(("line", line.rstrip("\n")))
-            self.q.put(("exit", p.wait()))
+                self.q.put(("line", p, line.rstrip("\n")))
+            self.q.put(("exit", p, p.wait()))
         threading.Thread(target=reader, daemon=True).start()
 
     def stop(self):
         if self.proc:
-            self.proc.terminate()
+            kill_tree(self.proc)
             self.log_line("stopped by user")
+
+    def _end_run(self, why):
+        """End the running MIP / report now and forget it (another file is being opened)."""
+        kill_tree(self.proc)
+        self.proc = None
+        self.go_btn.configure(state="normal")
+        self.stop_btn.configure(state="disabled")
+        self.prog_label.configure(text=f"{self.what}: {why}", foreground=RED)
 
     def _poll(self):
         try:
             while True:
-                kind, val = self.q.get_nowait()
+                kind, p, val = self.q.get_nowait()
+                if p is not self.proc:
+                    continue
                 if kind == "line":
                     if val.startswith("@@progress"):
                         _, frac, el, left, label = val.split(" ", 4)
@@ -715,16 +778,16 @@ class App:
         return bool(self.proc)
 
     def _renamed(self, done, error):
+        img = next((n for o, n in done if os.path.abspath(o) == os.path.abspath(self.image)), None)
+        if img:
+            self.set_image(img)               # (clears the log, so the renames are listed after it)
         for o, n in done:
             self.log_line(f"renamed {o} -> {os.path.basename(n)}")
         if error:
             self.log_line(error)
             messagebox.showerror("bigmip", error, parent=self.root)
-        if done:
-            self.set_image(done[0][1])
-            self.rn_tree.delete(*self.rn_tree.get_children())
-            if not error:
-                messagebox.showinfo("bigmip", f"Renamed {len(done)} file(s).", parent=self.root)
+        elif done:
+            messagebox.showinfo("bigmip", f"Renamed {len(done)} item(s).", parent=self.root)
 
     def rename_do(self):
         if self._busy():

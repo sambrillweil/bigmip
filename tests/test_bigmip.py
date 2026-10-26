@@ -286,13 +286,18 @@ def test_rename_and_undo(tmp_path):
     p = str(tmp_path / "ID1_25X_s.ims")
     write_ims(p, vol)
     write_notes(str(tmp_path / "ID1_25X_s_histology.toml"), ["405_ch", "488_ch", "561_ch"])
-    main([p, "--workers", "1", "--downsample", "2"])                 # outputs in bigmip_output/
+    main([p, "--workers", "1", "--downsample", "2"])                 # outputs in ID1_25X_s_bigmip_output/
+    assert (tmp_path / "ID1_25X_s_bigmip_output" / "ID1_25X_s_MIP.tif").exists()
     write_report(p)                                                    # _metadata.md/.json next to the image
     (tmp_path / "ID1_25X_s_crop.ims").write_bytes(b"x")              # another image: must NOT be touched
+    (tmp_path / "bigmip_output").mkdir()                               # an older shared output folder is covered too
+    (tmp_path / "bigmip_output" / "ID1_25X_s_MIP_old.tif").write_bytes(b"x")
     rename_main([p, "--replace", "25X", "63X", "--yes"])
     new = tmp_path / "ID1_63X_s.ims"
     assert new.exists() and not os.path.exists(p)
-    out = tmp_path / "bigmip_output"
+    assert not (tmp_path / "ID1_25X_s_bigmip_output").exists()        # the image's own output folder moved along
+    assert (tmp_path / "bigmip_output" / "ID1_63X_s_MIP_old.tif").exists()
+    out = tmp_path / "ID1_63X_s_bigmip_output"
     assert (out / "ID1_63X_s_MIP.tif").exists() and (out / "ID1_63X_s_MIP_x2smaller.tif").exists()
     assert (out / "ID1_63X_s_histology.toml").exists() and (tmp_path / "ID1_63X_s_histology.toml").exists()
     md = (tmp_path / "ID1_63X_s_metadata.md").read_text(encoding="utf-8")
@@ -308,7 +313,9 @@ def test_rename_and_undo(tmp_path):
         rename_main([str(new), "--undo"])
     finally:
         builtins.input = orig
-    assert os.path.exists(p) and (out / "ID1_25X_s_MIP.tif").exists()
+    out = tmp_path / "ID1_25X_s_bigmip_output"                         # undo: folder and files back, in reverse order
+    assert os.path.exists(p) and (out / "ID1_25X_s_MIP.tif").exists() and not (tmp_path / "ID1_63X_s_bigmip_output").exists()
+    assert (tmp_path / "bigmip_output" / "ID1_25X_s_MIP_old.tif").exists()
 
 
 def test_rename_reports_problems(tmp_path, monkeypatch):
@@ -390,7 +397,7 @@ def test_change_log(tmp_path, monkeypatch):
     rows2 = _log_rows(log2)
     assert "ID1_25X_s_MIP.tif" in rows2[-2]["new value"]                 # history unchanged
     assert rows2[-1]["how"] == "renamed ID1_25X_s -> ID1_63X_s" and rows2[-1]["section"] == "file history"
-    assert not os.path.exists(str(tmp_path / "bigmip_output" / "ID1_63X_s_histology_changes.csv"))
+    assert not os.path.exists(str(tmp_path / "ID1_63X_s_bigmip_output" / "ID1_63X_s_histology_changes.csv"))
     # a log that can't be written (e.g. open in Excel) never stops a save; the change is logged later
     f2 = str(tmp_path / "b_histology.toml")
     save(f2, {"sample": {"sample_id": "B"}})
@@ -443,3 +450,103 @@ def test_wheel_never_changes_fields(tk_root):
     cb.set("a")
     cb.event_generate("<MouseWheel>", delta=-120, when="now")
     assert cb.get() == "a"
+
+
+def test_one_output_folder_per_image(tmp_path):
+    from bigmip.output import default_outdir
+    vol = synthetic_volume()
+    a, b = str(tmp_path / "a.ims"), str(tmp_path / "b.ims")
+    write_ims(a, vol)
+    write_ims(b, vol)
+    for p in (a, b):
+        main([p, "--workers", "2", "--no-preview", "--skip-notes"])
+    assert default_outdir(a) == str(tmp_path / "a_bigmip_output")
+    assert (tmp_path / "a_bigmip_output" / "a_MIP.tif").exists() and (tmp_path / "b_bigmip_output" / "b_MIP.tif").exists()
+    assert not (tmp_path / "bigmip_output").exists()
+
+
+def test_slow_file_warning_and_ticking_clock(tmp_path, monkeypatch, capsys):
+    import time
+    import bigmip.cli as cli
+    vol = synthetic_volume()
+    p = str(tmp_path / "s.ims")
+    write_ims(p, vol)
+    monkeypatch.setattr(cli, "read_speed", lambda path: 12.0)         # as measured for an online-only Drive file
+    main([p, "-o", str(tmp_path / "o"), "--no-preview", "--skip-notes", "--workers", "1"])
+    out = capsys.readouterr().out
+    assert "WARNING: this file reads slowly (12 MB/s)" in out and "Available offline" in out
+    monkeypatch.setenv("BIGMIP_GUI", "1")                             # the app's clock moves without progress
+    bar = cli.StatusBar(1)
+    bar.update(0, 0.0, "channel 1/1")
+    time.sleep(2.5)
+    bar.done()
+    lines = [l for l in capsys.readouterr().out.splitlines() if l.startswith("@@progress 0.0000")]
+    assert len(lines) >= 3 and lines[-1].split()[2] in ("2", "3")     # elapsed seconds keep counting
+
+
+_SLEEPY = """
+import os, sys, time
+sys.path.insert(0, {repo!r})
+from concurrent.futures import ProcessPoolExecutor
+from bigmip.readers import _watch_parent
+if __name__ == "__main__":
+    ex = ProcessPoolExecutor(2, initializer=_watch_parent)
+    pids = {{ex.submit(os.getpid).result() for _ in range(20)}}
+    for _ in range(2):
+        ex.submit(time.sleep, 120)
+    print(" ".join(map(str, pids)), flush=True)
+    time.sleep(120)
+"""
+
+
+def _alive(pid):
+    if sys.platform.startswith("win"):
+        import ctypes
+        h = ctypes.windll.kernel32.OpenProcess(0x00100000, False, pid)      # SYNCHRONIZE
+        if not h:
+            return False
+        try:
+            return ctypes.windll.kernel32.WaitForSingleObject(h, 0) != 0     # 0 = exited
+        finally:
+            ctypes.windll.kernel32.CloseHandle(h)
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def test_workers_exit_when_their_run_is_killed(tmp_path):
+    import subprocess
+    import time
+    script = tmp_path / "sleepy.py"
+    script.write_text(_SLEEPY.format(repo=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    proc = subprocess.Popen([sys.executable, str(script)], stdout=subprocess.PIPE, text=True)
+    pids = [int(x) for x in proc.stdout.readline().split()]
+    assert pids and all(_alive(x) for x in pids)
+    proc.kill()                                                         # like Stop / closing the app / a crash
+    proc.wait()
+    t = time.time()
+    while any(_alive(x) for x in pids) and time.time() - t < 15:
+        time.sleep(0.2)
+    assert not any(_alive(x) for x in pids)
+
+
+def test_new_file_resets_the_app(tmp_path, tk_root):
+    from bigmip.gui import App
+    from bigmip.output import default_outdir
+    vol = synthetic_volume()
+    a, b = str(tmp_path / "a.ims"), str(tmp_path / "b.ims")
+    write_ims(a, vol)
+    write_ims(b, vol)
+    app = App(tk_root, a)
+    app.full_var.set(False)
+    app.rgb_var.set(True)
+    app.bar_var.set("50")
+    app.out_var.set(str(tmp_path / "elsewhere"))
+    app.rn_a.set("x")
+    app.log_line("old run output")
+    app.set_image(b)
+    assert app.full_var.get() and not app.rgb_var.get() and app.bar_var.get() == "0" and app.rn_a.get() == ""
+    assert app.out_var.get() == default_outdir(b) and "-o" not in app.mip_args()
+    assert "old run output" not in app.log.get("1.0", "end")

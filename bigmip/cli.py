@@ -6,13 +6,15 @@ import argparse
 import os
 import shutil
 import sys
+import threading
 import time
 
 import numpy as np
 
 from . import __version__
 from .colors import parse_color_list
-from .output import (add_scalebar, auto_range, block_max, render_rgb, write_composite, write_preview, write_rgb)
+from .output import (add_scalebar, auto_range, block_max, default_outdir, render_rgb, write_composite, write_preview,
+                     write_rgb)
 from .readers import open_stack
 
 EXAMPLES = """examples:
@@ -31,7 +33,8 @@ def build_parser():
         description="Max-intensity projection of a large .ims or TIFF stack, keeping pixel size, channel names and "
                     "channel colors. Output: a Fiji-ready composite TIFF (one channel per color).")
     p.add_argument("file", help="input .ims or .tif/.tiff (OME-TIFF, ImageJ TIFF)")
-    p.add_argument("-o", "--outdir", help="output folder (default: a 'bigmip_output' folder next to the input)")
+    p.add_argument("-o", "--outdir", help="output folder (default: NAME_bigmip_output next to the input, one per "
+                                          "image)")
     p.add_argument("--info", action="store_true", help="only print what is in the file, write nothing")
     p.add_argument("--level", type=int, default=0, help=".ims only: pyramid level (0 = full resolution, "
                                                         "1 = half, 2 = quarter, ...). Default 0")
@@ -69,36 +72,74 @@ def hms(sec):
     return f"{sec // 3600}:{sec % 3600 // 60:02d}:{sec % 60:02d}" if sec >= 3600 else f"{sec // 60}:{sec % 60:02d}"
 
 
+STALL_HINT = 60       # seconds without progress before saying why that can be normal
+
+
 class StatusBar:
-    """One self-updating line:  [########----------]  42.0%  channel 2/4 (488_GFP)  elapsed 0:31  left ~0:43"""
+    """One self-updating line:  [########----------]  42.0%  channel 2/4 (488_GFP)  elapsed 0:31  left ~0:43
+    In a terminal or the app, the clock keeps moving between updates: on a slow disk a block can take minutes."""
 
     def __init__(self, n_parts, width=30):
         self.n, self.width, self.t0, self.last = n_parts, width, time.time(), 0.0
         self.tty = sys.stdout.isatty()
         self.gui = os.environ.get("BIGMIP_GUI") == "1"      # the bigmip app reads '@@progress' lines
+        self.state, self.moved, self.hinted, self.running = None, self.t0, False, True
+        self.lock = threading.Lock()
+        if self.tty or self.gui:
+            threading.Thread(target=self._tick, daemon=True).start()
 
-    def update(self, part, frac, label, force=False):
-        now = time.time()
-        if not force and now - self.last < (0.25 if (self.tty or self.gui) else 15):   # files: a line every 15 s
-            return
-        self.last = now
-        total = min(1.0, (part + frac) / self.n)
-        el = now - self.t0
-        left = el / total * (1 - total) if total > 0.01 else None
-        if self.gui:
-            print(f"@@progress {total:.4f} {el:.0f} {left if left is not None else -1:.0f} {label}", flush=True)
-            return
-        k = int(round(total * self.width))
-        line = (f"[{'#' * k}{'-' * (self.width - k)}] {100 * total:5.1f}%  {label}  elapsed {hms(el)}"
-                + (f"  left ~{hms(left)}" if left is not None else ""))
-        if self.tty:
-            print("\r" + line.ljust(110)[:150], end="", flush=True)
-        else:
-            print(line, flush=True)
+    def _tick(self):
+        while self.running:
+            time.sleep(1)
+            if self.state is not None:
+                self.update(*self.state, force=True, tick=True)
+
+    def update(self, part, frac, label, force=False, tick=False):
+        with self.lock:
+            now = time.time()
+            if tick and not self.running:
+                return
+            if not tick:
+                if self.state is None or self.state[:2] != (part, frac):
+                    self.moved = now
+                self.state = (part, frac, label)
+            if not force and now - self.last < (0.25 if (self.tty or self.gui) else 15):   # files: every 15 s
+                return
+            self.last = now
+            total = min(1.0, (part + frac) / self.n)
+            el = now - self.t0
+            left = el / total * (1 - total) if total > 0.01 else None
+            if self.gui:
+                print(f"@@progress {total:.4f} {el:.0f} {left if left is not None else -1:.0f} {label}", flush=True)
+            else:
+                k = int(round(total * self.width))
+                line = (f"[{'#' * k}{'-' * (self.width - k)}] {100 * total:5.1f}%  {label}  elapsed {hms(el)}"
+                        + (f"  left ~{hms(left)}" if left is not None else ""))
+                print("\r" + line.ljust(110)[:150] if self.tty else line, end="" if self.tty else "\n", flush=True)
+            if not self.hinted and frac < 1 and now - self.moved > STALL_HINT:
+                self.hinted = True
+                print(("\n" if self.tty else "") + f"  note: no part has finished in {STALL_HINT} s. It is still "
+                      "working: each part reads every plane of one region, which takes a while on a slow disk. If the "
+                      "file is on Google Drive and not stored on this computer, Drive is downloading it as it is "
+                      "read (often 10-20 MB/s).", flush=True)
 
     def done(self):
-        if self.tty:
-            print()
+        with self.lock:
+            self.running = False
+            if self.tty:
+                print()
+
+
+def read_speed(path, nbytes=32 * 2**20):
+    """MB/s for reading nbytes from the middle of the file (a cloud / network copy shows up as slow)."""
+    size = os.path.getsize(path)
+    if size < 4 * nbytes:
+        return None
+    t = time.time()
+    with open(path, "rb") as fh:
+        fh.seek(size // 2)
+        n = len(fh.read(nbytes))
+    return n / 2**20 / max(time.time() - t, 1e-3)
 
 
 def step(msg):
@@ -173,9 +214,18 @@ def main(argv=None):
             colors[i] = col
 
     # ---- project
-    outdir = a.outdir or os.path.join(os.path.dirname(path), "bigmip_output")
+    outdir = a.outdir or default_outdir(path)
     os.makedirs(outdir, exist_ok=True)
     gb = len(chans) * (z1 - z0) * Y * X * np.dtype(st.dtype).itemsize / 2**30
+    speed = read_speed(path)            # a slow file (e.g. on Google Drive, not stored on this computer) is said up front
+    if speed is not None and speed < 100:
+        share = len(chans) / nC * (z1 - z0) / Z * (0.75 / 4 ** a.level if path.lower().endswith(".ims") else 1)
+        need = os.path.getsize(path) * share / 2**20 / speed
+        step(f"WARNING: this file reads slowly ({speed:.0f} MB/s), so this run takes at least {hms(need)} and often "
+             "several times longer (a cloud drive is slower still for the scattered reads a MIP makes); the first "
+             "progress can take minutes. The file is probably on a cloud or network drive and not stored on this "
+             "computer. Faster: copy it to a local disk, or in Google Drive right-click it > Offline access > Available "
+             "offline and wait until it has downloaded.")
     step(f"projecting {len(chans)} channel(s) x planes {z0 + 1}-{z1} ({gb:.1f} GB of image data to read)"
          + (f" with {a.workers} parallel workers" if path.lower().endswith(".ims") else ""))
     bar = StatusBar(len(chans))

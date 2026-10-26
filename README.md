@@ -158,7 +158,11 @@ logged the next time bigmip opens them.
   - a small preview;
   - **Include the histology notes** (on by default, when the image has notes): channel names like
     `638_Cy5 | melanopsin (Alexa 647)` in Fiji, the notes inside the TIFF, and a copy of the notes file.
-- Click **Make MIP**. A progress bar shows % done and time left, and the log shows each step.
+- Click **Make MIP**. A progress bar shows % done and time left, and the log shows each step. The clock keeps
+  running even when a part takes long. If the file reads slowly (e.g. on Google Drive and not stored on this
+  computer), the log says so at the start, with an estimate of how long the run will take.
+- **Stop** ends the run completely. Opening another image starts fresh: options, progress and log are reset (if a
+  MIP is still running, bigmip asks before stopping it).
 - **Open MIP in Fiji** opens the result. The first time, point bigmip to Fiji with **Choose Fiji...**.
 
 The box **"The same, as a command"** shows the exact command that the window runs. You can copy it into a terminal
@@ -185,7 +189,7 @@ Type a new name, or "Replace ... with ..." (e.g. 25X → 63X). Click **Preview**
 renamed, then **Rename**. This covers:
 - the image itself;
 - its notes;
-- all MIP outputs;
+- its output folder (`NAME_bigmip_output`) and all MIP outputs in it;
 - the metadata report.
 
 The old name is also updated inside the notes and the report (the notes' change log keeps the old names and records the rename). The notes keep a record of the old name, every rename
@@ -205,7 +209,8 @@ last rename** to put back what was already renamed).
 - **`.tif` / `.tiff`**: OME-TIFF (e.g. exported from Fusion) or ImageJ TIFF stacks. Axes Z·Y·X, C·Z·Y·X or Z·C·Y·X,
   one time point.
 
-**Output** goes to a folder called `bigmip_output` next to your image, unless you choose another. Nothing is ever
+**Output** goes to a folder of its own for each image, `NAME_bigmip_output`, next to the image, unless you choose
+another. Nothing is ever
 overwritten: if a file already exists, a new one is written with `_2`, `_3`, ...
 
 | File | What it is |
@@ -327,7 +332,7 @@ It opens directly, with no conversion.
 | GitHub Desktop won't pull ("you have changes") | Under **Changes**, right-click the files, **Discard changes**, then **Pull origin**. |
 | An update doesn't seem to have arrived | **Fetch origin**, then **Pull origin** in GitHub Desktop, and restart the app. |
 | An error about `imagecodecs` with a TIFF | The TIFF is compressed: `py -m pip install imagecodecs` |
-| Very slow | The file is probably on a network or cloud drive (Google Drive, a server). Copy it to a local disk, or test first at a smaller resolution. |
+| Very slow, or stuck at 0% for minutes | The file is probably on a network or cloud drive and not stored on this computer: the log warns about this at the start ("this file reads slowly"). Google Drive downloads such a file while bigmip reads it, often at 10–20 MB/s (about 30–60 min for 30 GB). Copy it to a local disk, or right-click it in File Explorer › **Offline access › Available offline** and wait until it has downloaded. Or test first at a smaller resolution. |
 | The computer runs out of memory | Use fewer parallel workers. The MIP itself needs about width × height × channels × 2 bytes of memory, e.g. ~3.5 GB for a 22,000 × 21,000 × 4-channel image. |
 | Colors look wrong | Change them in the Make MIP tab (or `--colors`). |
 | A bright surface layer hides everything | Project fewer planes. |

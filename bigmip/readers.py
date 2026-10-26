@@ -12,7 +12,7 @@ Metadata (Stack.meta)
 import os
 import re
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 
@@ -44,6 +44,21 @@ def _attr(group, key, default=None):
     if isinstance(v, bytes):
         v = v.decode("utf-8", "replace")
     return str(v).replace("\x00", "").strip()
+
+
+def _watch_parent():
+    """Pool initializer: a worker exits as soon as the run that started it ends, also when that run was killed (Stop,
+    closing the app, a crash). Otherwise idle workers stay behind, holding memory and the file."""
+    import multiprocessing
+    import threading
+    parent = multiprocessing.parent_process()
+    if parent is None:
+        return
+
+    def watch():
+        parent.join()
+        os._exit(1)
+    threading.Thread(target=watch, daemon=True).start()
 
 
 def _ims_block_max(args):
@@ -133,11 +148,17 @@ class ImsStack:
         tasks = [(self.path, dset, z0, z1, y, min(Y, y + by), x, min(X, x + bx), cz * 4)
                  for y in range(0, Y, by) for x in range(0, X, bx)]
         out = np.zeros((Y, X), self.dtype)
-        with ProcessPoolExecutor(max_workers=workers) as ex:
-            for n, (y, x, acc) in enumerate(ex.map(_ims_block_max, tasks), 1):
-                out[y:y + acc.shape[0], x:x + acc.shape[1]] = acc
-                if progress:
-                    progress(n, len(tasks))
+        with ProcessPoolExecutor(max_workers=workers, initializer=_watch_parent) as ex:
+            futures = [ex.submit(_ims_block_max, t) for t in tasks]
+            try:
+                for n, fut in enumerate(as_completed(futures), 1):    # counted as they finish, in any order
+                    y, x, acc = fut.result()
+                    out[y:y + acc.shape[0], x:x + acc.shape[1]] = acc
+                    if progress:
+                        progress(n, len(tasks))
+            except BaseException:
+                ex.shutdown(wait=False, cancel_futures=True)           # don't run the remaining blocks after a failure
+                raise
         return out
 
     def close(self):

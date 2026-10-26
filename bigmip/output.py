@@ -6,6 +6,14 @@ import tifffile
 
 from .colors import imagej_lut
 
+OUTDIR_SUFFIX = "_bigmip_output"
+
+
+def default_outdir(image):
+    """Each image gets its own output folder next to it: <image name>_bigmip_output."""
+    image = os.path.abspath(image)
+    return os.path.join(os.path.dirname(image), os.path.splitext(os.path.basename(image))[0] + OUTDIR_SUFFIX)
+
 
 def free_name(path):
     """Never overwrite: 'x.tif' -> 'x_2.tif', 'x_3.tif', ... if it exists."""
