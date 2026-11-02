@@ -169,6 +169,8 @@ The box **"The same, as a command"** shows the exact command that the window run
 to repeat the run later or on another computer.
 
 ### Tab 3: Zoom
+![Zoom](docs/app_zoom.png)
+
 Full-resolution example images of a few regions: a cell in the periphery, the optic nerve head, the nerve.
 - An overview of the image appears (taken from a MIP you already made, or from a small version inside the `.ims`).
 - Choose a **label** (peripheral, ONH, nerve, or type your own) and a **box size**, then **click** on the overview to
