@@ -50,6 +50,14 @@ def build_parser():
                    help="ignore display ranges stored in the file and compute them from the projection")
     p.add_argument("--downsample", type=int, nargs="*", default=[], metavar="K",
                    help="also write copies shrunk K-fold (max of each KxK block), e.g. --downsample 2 4")
+    p.add_argument("--zoom", nargs="+", action="append", metavar="X Y W H [LABEL]",
+                   help="instead of the whole MIP, a full-resolution MIP of one region: top-left corner X Y, width W "
+                        "and height H in microns (as Fiji shows them on a calibrated image) and an optional label for "
+                        "the file name, e.g. --zoom 1200 3400 250 250 M1. Repeat for more regions. Uses --channels, "
+                        "--z, --colors, --ranges and --gamma like the MIP")
+    p.add_argument("--onh", nargs=2, type=float, metavar=("X", "Y"),
+                   help="with --zoom: the optic nerve head's center in microns, to record how far each region is "
+                        "from it. Not needed when a region is labelled ONH (now or in an earlier run)")
     p.add_argument("--no-full", action="store_true",
                    help="do not write the full-size MIP: only the smaller copies (--downsample, still made from the "
                         "full-resolution projection) and the pictures, which then come from the largest copy")
@@ -150,6 +158,140 @@ def fmt_px(p):
     return f"{p:.4g} um" if p else "unknown"
 
 
+def display_ranges(a, m, chans, stack):
+    """Display range per output channel: from the file, else automatic; --auto-ranges / --ranges override."""
+    ranges = []
+    for i, c in enumerate(chans):
+        r = None if a.auto_ranges else m["ranges"][c]
+        ranges.append(r or auto_range(stack[i]))
+    if a.ranges:
+        items = [s.strip() for s in a.ranges.split(",")]
+        for i, s in enumerate(items[:len(chans)]):
+            if s and s.lower() != "auto":
+                lo, hi = (float(v) for v in s.split("-", 1))
+                ranges[i] = (lo, hi)
+            elif s.lower() == "auto":
+                ranges[i] = auto_range(stack[i])
+    return ranges
+
+
+def gamma_list(a, n):
+    gammas = [float(v) for v in a.gamma.split(",")] if a.gamma else [1.0] * n
+    return (gammas + [1.0] * n)[:n]
+
+
+def nice_bar(width_um):
+    """A round scale-bar length (1, 2 or 5 x 10^k um) of about a fifth of the image width."""
+    target = max(width_um / 5, 1e-3)
+    k = 10 ** np.floor(np.log10(target))
+    return next(f * k for f in (5, 2, 1) if f * k <= target)
+
+
+def parse_zooms(items):
+    """--zoom values -> [(x, y, w, h, label)]; labels become part of a file name."""
+    import re
+    boxes = []
+    for it in items or []:
+        if len(it) not in (4, 5):
+            sys.exit(f"--zoom takes X Y W H [LABEL] (got {' '.join(it)})")
+        try:
+            x, y, w, h = (float(v) for v in it[:4])
+        except ValueError:
+            sys.exit(f"--zoom: X Y W H must be numbers (got {' '.join(it[:4])})")
+        label = re.sub(r"[^\w-]+", "_", it[4]).strip("_") if len(it) == 5 else ""
+        boxes.append((x, y, w, h, label or str(len(boxes) + 1)))
+    return boxes
+
+
+def make_zooms(a, path, st, m, chans, names, colors, z0, z1, notes, notes_path):
+    """--zoom: full-resolution MIPs of a few regions (an example cell, the optic nerve head, ...). Only those regions
+    are read from the file. Each gives NAME_zoom_LABEL.tif (calibrated composite for Fiji) and a PNG with a scale
+    bar; the regions are recorded in NAME_zoom_boxes.json."""
+    import json
+    from .notes import channel_labels, log_event, summary_text
+    Z, Y, X = m["shape"]
+    px = m["pixel_um"]
+    ux, uy = (px[0] or 1.0), (px[1] or px[0] or 1.0)          # without a pixel size, boxes are in pixels
+    outdir = a.outdir or default_outdir(path)
+    os.makedirs(outdir, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(path))[0]
+    labels = channel_labels(notes, names) if notes else names
+    info = summary_text(notes) if notes else None
+    gammas = gamma_list(a, len(chans))
+    boxes = parse_zooms(a.zoom)
+    jpath = os.path.join(outdir, f"{stem}_zoom_boxes.json")
+    try:
+        with open(jpath, encoding="utf-8") as fh:
+            old = json.load(fh)
+    except (OSError, ValueError):
+        old = []
+    from .zoom import OnhDistance, is_onh
+    onh = next(((x + w / 2, y + h / 2) for x, y, w, h, lab in boxes if is_onh(lab)), None) or         (tuple(a.onh) if a.onh else None) or         next(((r["x_um"] + r["w_um"] / 2, r["y_um"] + r["h_um"] / 2) for r in reversed(old) if is_onh(r.get("label"))),
+             None)
+    from_onh = None
+    if onh and any(not is_onh(b[4]) for b in boxes):
+        from .readers import overview
+        ov = overview(path) if not a.level else None
+        from_onh = OnhDistance(*ov, (ux, uy), onh) if ov else None
+        print(f"  ONH at ({onh[0]:.0f}, {onh[1]:.0f}) um; distances along the tissue "
+              + ("from the overview" if from_onh else "not available (no overview: make the MIP first), straight only"))
+    step(f"{len(boxes)} zoomed region(s), planes {z0 + 1}-{z1}, to {outdir}")
+    bar = StatusBar(len(boxes) * len(chans))
+    written, record = [], []
+    for b, (x, y, w, h, label) in enumerate(boxes):
+        x0, y0 = max(0, int(round(x / ux))), max(0, int(round(y / uy)))
+        x1, y1 = min(X, int(round((x + w) / ux))), min(Y, int(round((y + h) / uy)))
+        if x1 - x0 < 2 or y1 - y0 < 2:
+            print(f"  skipped '{label}': the box is outside the image ({X * ux:.0f} x {Y * uy:.0f}"
+                  f"{' um' if px[0] else ' px'})")
+            continue
+        crop = np.zeros((len(chans), y1 - y0, x1 - x0), st.dtype)
+        for i, c in enumerate(chans):
+            part = b * len(chans) + i
+            bar.update(part, 0.0, f"zoom '{label}' channel {i + 1}/{len(chans)}", force=True)
+            crop[i] = st.max_projection(c, z0, z1, workers=a.workers, region=(y0, y1, x0, x1),
+                                        progress=lambda n, t, part=part, label=label, i=i: bar.update(
+                                            part, n / t, f"zoom '{label}' channel {i + 1}/{len(chans)}"))
+        ranges = display_ranges(a, m, chans, crop)
+        straight = along = None
+        if onh and not is_onh(label):            # how peripheral: in the file name and the record
+            center = (x + w / 2, y + h / 2)
+            straight, along = from_onh(center) if from_onh else (float(np.hypot(center[0] - onh[0],
+                                                                                center[1] - onh[1])), None)
+        dist = along if along is not None else straight
+        base = os.path.join(outdir, f"{stem}_zoom_{label}" + (f"_{dist:.0f}um-from-ONH" if dist is not None else ""))
+        tif = write_composite(base + ".tif", crop, labels, colors, ranges, px, info)
+        rgb = render_rgb(crop, colors, ranges, gammas)
+        bar_um = (a.scalebar or nice_bar((x1 - x0) * px[0])) if px[0] else 0
+        if bar_um:
+            add_scalebar(rgb, bar_um, px[0])
+        png = write_preview(base + (f"_bar{bar_um:g}um" if bar_um else "") + ".png", rgb, max_side=10**9)
+        written += [tif, png]
+        record.append(dict(label=label, x_um=x, y_um=y, w_um=w, h_um=h, x_px=x0, y_px=y0, w_px=x1 - x0,
+                           h_px=y1 - y0, planes=[z0 + 1, z1], scalebar_um=bar_um,
+                           onh_center_um=list(onh) if straight is not None else None,
+                           from_onh_straight_um=None if straight is None else round(straight, 1),
+                           from_onh_along_tissue_um=None if along is None else round(along, 1),
+                           files=[os.path.basename(tif), os.path.basename(png)]))
+    bar.done()
+    st.close()
+    if record:                     # the regions made so far, kept with the outputs (the app redraws them)
+        with open(jpath, "w", encoding="utf-8") as fh:
+            json.dump(old + record, fh, indent=1)
+        if notes_path:
+            log_event(notes_path, "zoomed MIPs made with these notes", ", ".join(r["files"][0] for r in record))
+    step(f"done: {len(record)} region(s)")
+    for r in record:
+        print(f"  {r['label']}: {r['w_px']} x {r['h_px']} px" + (f", scale bar {r['scalebar_um']:g} um"
+                                                               if r['scalebar_um'] else "")
+              + (f", {r['from_onh_along_tissue_um']:.0f} um from the ONH along the tissue"
+                 if r['from_onh_along_tissue_um'] is not None else "")
+              + (f" ({r['from_onh_straight_um']:.0f} um in a straight line)"
+                 if r['from_onh_straight_um'] is not None else ""))
+    for w in written:
+        print(f"  wrote {w}")
+
+
 def main(argv=None):
     a = build_parser().parse_args(argv)
     path = os.path.abspath(a.file)
@@ -213,6 +355,9 @@ def main(argv=None):
                 sys.exit(f"--colors: channel {i + 1} not in the output (it has {len(chans)})")
             colors[i] = col
 
+    if a.zoom:
+        return make_zooms(a, path, st, m, chans, names, colors, z0, z1, notes, notes_path)
+
     # ---- project
     outdir = a.outdir or default_outdir(path)
     os.makedirs(outdir, exist_ok=True)
@@ -246,21 +391,7 @@ def main(argv=None):
               "to a local disk first, or mark the folder 'Available offline' in Google Drive -- later runs are then "
               "several times faster.")
 
-    # ---- display ranges: file -> auto -> explicit overrides
-    ranges = []
-    for i, c in enumerate(chans):
-        r = None if a.auto_ranges else m["ranges"][c]
-        ranges.append(r or auto_range(proj[i]))
-    if a.ranges:
-        items = [s.strip() for s in a.ranges.split(",")]
-        for i, s in enumerate(items[:len(chans)]):
-            if s and s.lower() != "auto":
-                lo, hi = (float(v) for v in s.split("-", 1))
-                ranges[i] = (lo, hi)
-            elif s.lower() == "auto":
-                ranges[i] = auto_range(proj[i])
-    gammas = [float(v) for v in a.gamma.split(",")] if a.gamma else [1.0] * len(chans)
-    gammas = (gammas + [1.0] * len(chans))[:len(chans)]
+    ranges, gammas = display_ranges(a, m, chans, proj), gamma_list(a, len(chans))
 
     # ---- write
     stem = os.path.splitext(os.path.basename(path))[0]

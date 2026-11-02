@@ -138,22 +138,31 @@ class ImsStack:
                          z_um=pz * scale if pz else None, names=names, colors=colors, ranges=ranges,
                          dtype=str(self.dtype), levels=levels, source="Imaris .ims")
 
-    def max_projection(self, channel, z0=0, z1=None, workers=4, block=2048, progress=None):
-        """Max over planes z0..z1-1 of one channel (index into self.channels). Streams chunk-aligned XY blocks."""
+    def max_projection(self, channel, z0=0, z1=None, workers=4, block=2048, progress=None, region=None):
+        """Max over planes z0..z1-1 of one channel (index into self.channels). Streams chunk-aligned XY blocks.
+        region = (y0, y1, x0, x1) in pixels: project only that part of the image (for zoomed examples)."""
         Z, Y, X = self.shape
         z1 = Z if z1 is None else min(z1, Z)
+        ry0, ry1, rx0, rx1 = region or (0, Y, 0, X)
         cz, cy, cx = self.chunks
         by, bx = max(cy, block // cy * cy), max(cx, block // cx * cx)
         dset = f"DataSet/ResolutionLevel {self.level}/TimePoint 0/Channel {self.channels[channel]}/Data"
-        tasks = [(self.path, dset, z0, z1, y, min(Y, y + by), x, min(X, x + bx), cz * 4)
-                 for y in range(0, Y, by) for x in range(0, X, bx)]
-        out = np.zeros((Y, X), self.dtype)
-        with ProcessPoolExecutor(max_workers=workers, initializer=_watch_parent) as ex:
+        tasks = [(self.path, dset, z0, z1, max(y, ry0), min(Y, y + by, ry1), max(x, rx0), min(X, x + bx, rx1), cz * 4)
+                 for y in range(ry0 // by * by, ry1, by) for x in range(rx0 // bx * bx, rx1, bx)]
+        out = np.zeros((ry1 - ry0, rx1 - rx0), self.dtype)
+        if workers <= 1:              # in this process (small reads, e.g. the app's overview: no worker start-up)
+            for n, t in enumerate(tasks, 1):
+                y, x, acc = _ims_block_max(t)
+                out[y - ry0:y - ry0 + acc.shape[0], x - rx0:x - rx0 + acc.shape[1]] = acc
+                if progress:
+                    progress(n, len(tasks))
+            return out
+        with ProcessPoolExecutor(max_workers=max(1, min(workers, len(tasks))), initializer=_watch_parent) as ex:
             futures = [ex.submit(_ims_block_max, t) for t in tasks]
             try:
                 for n, fut in enumerate(as_completed(futures), 1):    # counted as they finish, in any order
                     y, x, acc = fut.result()
-                    out[y:y + acc.shape[0], x:x + acc.shape[1]] = acc
+                    out[y - ry0:y - ry0 + acc.shape[0], x - rx0:x - rx0 + acc.shape[1]] = acc
                     if progress:
                         progress(n, len(tasks))
             except BaseException:
@@ -237,12 +246,13 @@ class TiffStack:
         idx = [c if a == "C" else z if a == self.zaxis else 0 for a in self.lead]
         return int(np.ravel_multi_index(idx, self.lead_sizes)) if self.lead else 0
 
-    def max_projection(self, channel, z0=0, z1=None, workers=1, block=None, progress=None):
-        """Max over planes z0..z1-1 of one channel, one plane in memory at a time."""
+    def max_projection(self, channel, z0=0, z1=None, workers=1, block=None, progress=None, region=None):
+        """Max over planes z0..z1-1 of one channel, one plane in memory at a time. region = (y0, y1, x0, x1)."""
         z1 = self.nz if z1 is None else min(z1, self.nz)
+        ry0, ry1, rx0, rx1 = region or (0, self.shape[1], 0, self.shape[2])
         out = None
         for n, z in enumerate(range(z0, z1), 1):
-            plane = _retry(lambda: self.pages[self._page_index(channel, z)].asarray(),
+            plane = _retry(lambda: self.pages[self._page_index(channel, z)].asarray()[ry0:ry1, rx0:rx1],
                            f"plane {z + 1} of channel {channel + 1}")
             out = plane.copy() if out is None else np.maximum(out, plane, out=out)
             if progress:
@@ -251,6 +261,47 @@ class TiffStack:
 
     def close(self):
         self.tif.close()
+
+
+def overview(path, max_side=1600):
+    """A small max projection of the whole image, for picking regions: ((C, y, x) array, (fy, fx)), where fy, fx are
+    full-resolution pixels per overview pixel. First choice: a MIP bigmip already made for this image (the smallest
+    copy; usually on this computer even when the image itself is on a cloud drive). Otherwise, for .ims: a smaller
+    version stored in the file. None if there is nothing to use (a TIFF without a MIP yet)."""
+    import glob
+    import tifffile
+    from .output import block_max, default_outdir
+    st = open_stack(path)
+    Z, Y, X = st.shape
+    levels = st.levels
+    nc = len(st.channels)
+    st.close()
+    stem = os.path.splitext(os.path.basename(path))[0]
+    folders = [default_outdir(path), os.path.join(os.path.dirname(os.path.abspath(path)), "bigmip_output")]
+    cands = [c for d in folders for c in glob.glob(os.path.join(d, f"{glob.escape(stem)}_MIP*.tif"))
+             if "_RGB" not in c and "_z" not in os.path.basename(c)[len(stem):]]   # all planes only
+    small = None
+    for best in sorted(cands, key=os.path.getsize):               # the whole field, every channel, all planes
+        try:
+            mm = tifffile.memmap(best) if os.path.getsize(best) > 2**30 else tifffile.imread(best)
+        except (ValueError, OSError):
+            continue
+        mm = mm[None] if mm.ndim == 2 else mm
+        if mm.shape[0] != nc:
+            continue
+        k = max(1, int(np.ceil(max(mm.shape[-2:]) / (2 * max_side))))
+        small = np.asarray(mm[:, ::k, ::k])
+        break
+    if small is None and path.lower().endswith(".ims"):
+        level = next((l for l in levels if max(X, Y) / 2 ** l <= 2 * max_side), levels[-1])
+        st = open_stack(path, level)
+        small = np.stack([st.max_projection(c, workers=1) for c in range(len(st.channels))])
+        st.close()
+    if small is None:
+        return None
+    k = max(1, int(np.ceil(max(small.shape[-2:]) / max_side)))
+    small = block_max(small, k) if k > 1 else small
+    return small, (Y / small.shape[-2], X / small.shape[-1])
 
 
 def open_stack(path, level=0):

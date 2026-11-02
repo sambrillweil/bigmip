@@ -144,16 +144,20 @@ class App:
         pw.add(self.nb, weight=4)
         self.tab_notes = ttk.Frame(self.nb, padding=4)
         self.tab_mip = ttk.Frame(self.nb)
+        self.tab_zoom = ttk.Frame(self.nb, padding=(8, 6))
         self.tab_meta = ttk.Frame(self.nb, padding=8)
         self.tab_rename = ttk.Frame(self.nb, padding=8)
         self.nb.add(self.tab_notes, text="1  Histology notes")
         self.nb.add(self.tab_mip, text="2  Make MIP")
-        self.nb.add(self.tab_meta, text="3  Metadata report")
-        self.nb.add(self.tab_rename, text="4  Rename")
+        self.nb.add(self.tab_zoom, text="3  Zoom")
+        self.nb.add(self.tab_meta, text="4  Metadata report")
+        self.nb.add(self.tab_rename, text="5  Rename")
         ttk.Label(self.tab_notes, text="Choose an image first.", style="Sub.TLabel").pack(pady=40)
         self._build_mip()
+        self._build_zoom()
         self._build_meta()
         self._build_rename()
+        self.nb.bind("<<NotebookTabChanged>>", lambda e: self._zoom_tab_shown())
 
         logf = ttk.Frame(pw)
         pw.add(logf, weight=1)
@@ -317,6 +321,261 @@ class App:
             btn.configure(background=res[1], activebackground=res[1])
             self.update_command()
 
+    # ---------------------------------------------------------------- zoom tab
+    def _build_zoom(self):
+        """Pick regions on an overview of the image (click = a box of the chosen size, drag = any box); each becomes
+        a full-resolution MIP of just that region (NAME_zoom_LABEL.tif + a PNG with a scale bar)."""
+        f = self.tab_zoom
+        self.zoom_boxes, self.zoom_prev, self.zoom_ov, self.zoom_img, self._zoom_drag = [], [], None, None, None
+        top = ttk.Frame(f)
+        top.pack(fill="x")
+        self.zoom_unit = ttk.Label(top, text="Box size (um)")
+        self.zoom_unit.pack(side="left")
+        self.zoom_size = tk.StringVar(value="250")
+        ttk.Spinbox(top, from_=10, to=20000, increment=50, width=7, textvariable=self.zoom_size).pack(side="left",
+                                                                                                      padx=6)
+        ttk.Label(top, text="Label").pack(side="left", padx=(14, 0))
+        self.zoom_label = tk.StringVar(value="peripheral")
+        ttk.Combobox(top, textvariable=self.zoom_label, values=["peripheral", "ONH", "nerve", "example"], width=12
+                     ).pack(side="left", padx=6)
+        ttk.Button(top, text="Remove last", command=self.zoom_remove_last).pack(side="left", padx=(14, 4))
+        ttk.Button(top, text="Clear", command=self.zoom_clear).pack(side="left", padx=4)
+        ttk.Button(top, text="Refresh overview", command=lambda: self._zoom_load(force=True)).pack(side="left",
+                                                                                                   padx=4)
+        ttk.Label(f, text="Click to place a box of this size, or drag to draw one; right-click a box to remove it. "
+                          "Mark the optic nerve head with a box labelled ONH: every other box then shows (and its "
+                          "files are named with) its distance from it, along the tissue. Zoomed MIPs are always full "
+                          "resolution and use the channels, colors, contrast and planes set in the Make MIP tab. "
+                          "Grey boxes = made before.", style="Hint.TLabel", wraplength=1000,
+                  justify="left").pack(anchor="w", pady=(4, 4))
+        go = ttk.Frame(f)
+        go.pack(side="bottom", fill="x", pady=(6, 0))
+        self.zoom_btn = ttk.Button(go, text="Make zoomed MIPs", style="Big.TButton", command=self.make_zoom)
+        self.zoom_btn.pack(side="left")
+        ttk.Button(go, text="Open output folder", command=self.open_outdir).pack(side="left", padx=8)
+        body = ttk.Frame(f)
+        body.pack(fill="both", expand=True)
+        self.zoom_tree = ttk.Treeview(body, columns=("label", "x", "y", "w", "h", "onh"), show="headings", height=8)
+        for c, t, w in (("label", "label", 90), ("x", "x", 60), ("y", "y", 60), ("w", "width", 55),
+                        ("h", "height", 55), ("onh", "from ONH", 110)):
+            self.zoom_tree.heading(c, text=t)
+            self.zoom_tree.column(c, width=w, anchor="w" if c == "label" else "e")
+        self.zoom_tree.pack(side="right", fill="y", padx=(8, 0))
+        self.zoom_canvas = tk.Canvas(body, background="#111111", highlightthickness=0, cursor="crosshair")
+        self.zoom_canvas.pack(side="left", fill="both", expand=True)
+        cv = self.zoom_canvas
+        cv.bind("<Configure>", lambda e: self._zoom_draw())
+        cv.bind("<ButtonPress-1>", self._zoom_press)
+        cv.bind("<B1-Motion>", self._zoom_motion)
+        cv.bind("<ButtonRelease-1>", self._zoom_release)
+        cv.bind("<Button-3>", self._zoom_right_click)
+
+    def _zoom_scale(self):
+        """(um per full-resolution pixel x, y), or (1, 1) when the file stores no pixel size (boxes are in pixels)."""
+        px = self.meta["pixel_um"] if self.meta else (None, None)
+        return (px[0] or 1.0), (px[1] or px[0] or 1.0)
+
+    def _zoom_reset(self):
+        """New image: no boxes, no overview yet; previous regions are read back from NAME_zoom_boxes.json."""
+        self.zoom_boxes, self.zoom_ov, self.zoom_img, self._zoom_dist = [], None, None, None
+        self.zoom_unit.configure(text="Box size (um)" if self.meta["pixel_um"][0] else "Box size (px)")
+        self._zoom_read_prev()
+        self._zoom_list()
+        self._zoom_draw()
+        if self.nb.select() == str(self.tab_zoom):
+            self._zoom_load()
+
+    def _zoom_read_prev(self):
+        import json
+        stem = os.path.splitext(os.path.basename(self.image))[0]
+        outdir = self.out_var.get() or default_outdir(self.image)
+        try:
+            with open(os.path.join(outdir, f"{stem}_zoom_boxes.json"), encoding="utf-8") as fh:
+                self.zoom_prev = [dict(x=r["x_um"], y=r["y_um"], w=r["w_um"], h=r["h_um"], label=r["label"])
+                                  for r in json.load(fh)]
+        except (OSError, ValueError, KeyError, TypeError):
+            self.zoom_prev = []
+
+    def _zoom_tab_shown(self):
+        if self.image and self.nb.select() == str(self.tab_zoom):
+            self._zoom_load()
+
+    def _zoom_load(self, force=False):
+        """Make the overview in the background (seconds; a TIFF needs a MIP made first)."""
+        if not self.image or (self.zoom_ov is not None and not force) or getattr(self, "_zoom_loading", False):
+            return
+        self._zoom_loading, image, result = True, self.image, {}
+        self.zoom_canvas.delete("all")
+        self.zoom_canvas.create_text(20, 20, anchor="nw", fill="#cccccc", text="Making the overview...")
+
+        def work():
+            from .readers import overview
+            try:
+                result["ov"] = overview(image)
+            except Exception as e:                      # shown in the canvas, never crashes the app
+                result["err"] = str(e)
+
+        def done():
+            if "ov" not in result and "err" not in result:
+                self.root.after(150, done)
+                return
+            self._zoom_loading = False
+            if image != self.image:                     # another image was opened meanwhile
+                return self._zoom_load()
+            if result.get("ov") is None:
+                self.zoom_canvas.delete("all")
+                self.zoom_canvas.create_text(20, 20, anchor="nw", fill="#cccccc", width=600, text=(
+                    result.get("err") or "No overview yet: a TIFF has no small version inside it. Make the MIP "
+                                         "first (tab 2), then come back here."))
+                return
+            self.zoom_small, self.zoom_f = result["ov"]
+            self.zoom_ov = self._zoom_render(self.zoom_small)
+            self._zoom_list()
+            self._zoom_draw()
+        threading.Thread(target=work, daemon=True).start()
+        self.root.after(150, done)
+
+    def _zoom_render(self, small):
+        """The overview in the colors and contrast of the Make MIP tab (contrast 'auto' / no stored range: from it)."""
+        from .output import auto_range, render_rgb
+        colors, ranges = [], []
+        for i, d in enumerate(self.chan_rows[:small.shape[0]]):
+            colors.append(tuple(int(d["color"][k:k + 2], 16) / 255 for k in (1, 3, 5)) if d["use"].get() else (0, 0, 0))
+            stored, mode = self.meta["ranges"][i], d["mode"].get()
+            try:
+                rng = (float(d["lo"].get()), float(d["hi"].get())) if mode == "custom" else \
+                    (stored if mode == "from file" and stored else auto_range(small[i]))
+            except ValueError:
+                rng = auto_range(small[i])
+            ranges.append(rng)
+        return render_rgb(small, colors, ranges)
+
+    def _zoom_geom(self):
+        """(scale, x offset, y offset) of the overview drawn in the canvas."""
+        oy, ox = self.zoom_ov.shape[:2]
+        cw, ch = max(10, self.zoom_canvas.winfo_width()), max(10, self.zoom_canvas.winfo_height())
+        s = min(cw / ox, ch / oy)
+        return s, (cw - ox * s) / 2, (ch - oy * s) / 2
+
+    def _zoom_to_canvas(self, b):
+        s, dx, dy = self._zoom_geom()
+        (ux, uy), (fy, fx) = self._zoom_scale(), self.zoom_f
+        k = lambda v, u, f: v / u / f * s  # noqa: E731    um -> canvas pixels
+        return (dx + k(b["x"], ux, fx), dy + k(b["y"], uy, fy), dx + k(b["x"] + b["w"], ux, fx),
+                dy + k(b["y"] + b["h"], uy, fy))
+
+    def _zoom_from_canvas(self, cx, cy):
+        s, dx, dy = self._zoom_geom()
+        (ux, uy), (fy, fx) = self._zoom_scale(), self.zoom_f
+        return (cx - dx) / s * fx * ux, (cy - dy) / s * fy * uy
+
+    def _zoom_draw(self):
+        cv = self.zoom_canvas
+        if self.zoom_ov is None:
+            return
+        from PIL import Image, ImageTk
+        cv.delete("all")
+        s, dx, dy = self._zoom_geom()
+        oy, ox = self.zoom_ov.shape[:2]
+        img = Image.fromarray(self.zoom_ov).resize((max(1, int(ox * s)), max(1, int(oy * s))), Image.BILINEAR)
+        self.zoom_img = ImageTk.PhotoImage(img)
+        cv.create_image(dx, dy, anchor="nw", image=self.zoom_img)
+        for b, color, dash in [(b, "#9e9e9e", (3, 3)) for b in self.zoom_prev] + \
+                              [(b, "#ffeb3b", None) for b in self.zoom_boxes]:
+            x0, y0, x1, y1 = self._zoom_to_canvas(b)
+            cv.create_rectangle(x0, y0, x1, y1, outline=color, width=2, dash=dash)
+            cv.create_text(x0 + 3, y0 - 2, anchor="sw", text=b["label"], fill=color, font=("Segoe UI", 9, "bold"))
+
+    def _zoom_onh_distance(self):
+        """Distance-from-ONH function for the current ONH box (or one made before), or None."""
+        from .zoom import OnhDistance, is_onh
+        onh = next((b for b in self.zoom_boxes if is_onh(b["label"])), None) or             next((b for b in reversed(self.zoom_prev) if is_onh(b["label"])), None)
+        if onh is None or self.zoom_ov is None:
+            return None
+        center = (onh["x"] + onh["w"] / 2, onh["y"] + onh["h"] / 2)
+        if getattr(self, "_zoom_dist", None) is None or self._zoom_dist.onh != center:
+            self._zoom_dist = OnhDistance(self.zoom_small, self.zoom_f, self._zoom_scale(), center)
+        return self._zoom_dist
+
+    def _zoom_list(self):
+        from .zoom import is_onh
+        dist = self._zoom_onh_distance()
+        unit = "um" if self.meta and self.meta["pixel_um"][0] else "px"
+        self.zoom_tree.delete(*self.zoom_tree.get_children())
+        for b in self.zoom_boxes:
+            far = ""
+            if dist and not is_onh(b["label"]):
+                straight, along = dist((b["x"] + b["w"] / 2, b["y"] + b["h"] / 2))
+                far = f"{along:.0f} {unit}" if along is not None else f"{straight:.0f} {unit} (straight)"
+            self.zoom_tree.insert("", "end", values=(b["label"], f"{b['x']:.0f}", f"{b['y']:.0f}", f"{b['w']:.0f}",
+                                                     f"{b['h']:.0f}", far))
+
+    def _zoom_press(self, e):
+        if self.zoom_ov is not None:
+            self._zoom_drag = (e.x, e.y)
+
+    def _zoom_motion(self, e):
+        if self._zoom_drag:
+            self.zoom_canvas.delete("rubber")
+            self.zoom_canvas.create_rectangle(*self._zoom_drag, e.x, e.y, outline="#ffeb3b", dash=(4, 2),
+                                              tags="rubber")
+
+    def _zoom_release(self, e):
+        if not self._zoom_drag:
+            return
+        (x0, y0), self._zoom_drag = self._zoom_drag, None
+        self.zoom_canvas.delete("rubber")
+        label = self.zoom_label.get().strip() or "peripheral"
+        if abs(e.x - x0) < 6 and abs(e.y - y0) < 6:            # a click: a box of the chosen size around it
+            try:
+                size = max(1.0, float(self.zoom_size.get()))
+            except ValueError:
+                size = 250.0
+            cx, cy = self._zoom_from_canvas(e.x, e.y)
+            box = dict(x=cx - size / 2, y=cy - size / 2, w=size, h=size, label=label)
+        else:                                                   # a drag: that rectangle
+            ax, ay = self._zoom_from_canvas(min(x0, e.x), min(y0, e.y))
+            bx, by = self._zoom_from_canvas(max(x0, e.x), max(y0, e.y))
+            box = dict(x=ax, y=ay, w=bx - ax, h=by - ay, label=label)
+        ux, uy = self._zoom_scale()                             # keep it inside the image
+        W, H = self.meta["shape"][2] * ux, self.meta["shape"][1] * uy
+        box["x"], box["y"] = min(max(0.0, box["x"]), max(0.0, W - box["w"])), min(max(0.0, box["y"]),
+                                                                                  max(0.0, H - box["h"]))
+        box["w"], box["h"] = min(box["w"], W), min(box["h"], H)
+        self.zoom_boxes.append(box)
+        self._zoom_list()
+        self._zoom_draw()
+
+    def _zoom_right_click(self, e):
+        for i in range(len(self.zoom_boxes) - 1, -1, -1):
+            x0, y0, x1, y1 = self._zoom_to_canvas(self.zoom_boxes[i])
+            if x0 <= e.x <= x1 and y0 <= e.y <= y1:
+                del self.zoom_boxes[i]
+                break
+        self._zoom_list()
+        self._zoom_draw()
+
+    def zoom_remove_last(self):
+        if self.zoom_boxes:
+            self.zoom_boxes.pop()
+        self._zoom_list()
+        self._zoom_draw()
+
+    def zoom_clear(self):
+        self.zoom_boxes = []
+        self._zoom_list()
+        self._zoom_draw()
+
+    def make_zoom(self):
+        if not getattr(self, "image", None):
+            messagebox.showinfo("bigmip", "Choose an image first.", parent=self.root)
+            return
+        if not self.zoom_boxes:
+            messagebox.showinfo("bigmip", "Place at least one box on the overview first.", parent=self.root)
+            return
+        self.outputs = []
+        self.run_tool(["-m", "bigmip"] + self.mip_args(zoom=self.zoom_boxes), "Making zoomed MIPs")
+
     # ---------------------------------------------------------------- metadata tab
     def _build_meta(self):
         top = ttk.Frame(self.tab_meta)
@@ -443,6 +702,7 @@ class App:
         self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
         self._load_notes()
+        self._zoom_reset()
         self.fiji_btn.configure(state="disabled")
         self.outputs = []
         self.update_command()
@@ -509,12 +769,14 @@ class App:
         self.meta_btn.configure(state="normal" if self.image.lower().endswith(".ims") else "disabled")
 
     # ================================================================== MIP
-    def mip_args(self):
+    def mip_args(self, zoom=None):
+        """The command for the MIP tab's settings; with zoom (boxes from the Zoom tab), the command for zoomed MIPs
+        of those regions instead (always full resolution; same channels, colors, contrast and planes)."""
         a = [self.image]
         if not self.meta:
             return a
         lvl = self.level_box.current()
-        if lvl > 0:
+        if lvl > 0 and not zoom:
             a += ["--level", str(self.meta["levels"][lvl])]
         Z = self.meta["shape"][0]
         try:
@@ -550,19 +812,23 @@ class App:
         if any(g not in ("1", "1.0") for g in gam):
             a += ["--gamma", ",".join(gam)]
         ks = [str(k) for k, v in self.ds.items() if v.get()]
-        if ks:
-            a += ["--downsample"] + ks
-        if not self.full_var.get():
-            a.append("--no-full")
-        if self.rgb_var.get():
-            a.append("--rgb")
-        try:
-            if float(self.bar_var.get() or 0) > 0:
-                a += ["--scalebar", self.bar_var.get().strip()]
-        except ValueError:
-            pass
-        if not self.prev_var.get():
-            a.append("--no-preview")
+        if zoom:
+            for b in zoom:
+                a += ["--zoom"] + [f"{b[k]:.2f}" for k in ("x", "y", "w", "h")] + [b["label"]]
+        else:
+            if ks:
+                a += ["--downsample"] + ks
+            if not self.full_var.get():
+                a.append("--no-full")
+            if self.rgb_var.get():
+                a.append("--rgb")
+            try:
+                if float(self.bar_var.get() or 0) > 0:
+                    a += ["--scalebar", self.bar_var.get().strip()]
+            except ValueError:
+                pass
+            if not self.prev_var.get():
+                a.append("--no-preview")
         default_out = default_outdir(self.image)
         if os.path.abspath(self.out_var.get() or default_out) != os.path.abspath(default_out):
             a += ["-o", self.out_var.get()]
@@ -611,6 +877,8 @@ class App:
         if self.proc:
             return
         env = dict(os.environ, BIGMIP_GUI="1", PYTHONIOENCODING="utf-8", PYTHONUNBUFFERED="1")
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))     # the jobs use this same bigmip,
+        env["PYTHONPATH"] = os.pathsep.join([here] + [p for p in [os.environ.get("PYTHONPATH")] if p])  # from anywhere
         win = sys.platform.startswith("win")
         self.log_line(f"> py {' '.join(args)}")
         try:
@@ -674,8 +942,14 @@ class App:
                         self.prog.configure(value=1000)
                     self.prog_label.configure(text=f"{self.what}: {'done' if ok else 'stopped / failed (see log)'}",
                                               foreground=GREEN if ok else RED)
-                    if ok and self.what.startswith("Making the MIP"):
+                    if ok and self.what.startswith(("Making the MIP", "Making zoomed")):
                         self.fiji_btn.configure(state="normal")
+                    if ok and self.what.startswith("Making zoomed"):       # made boxes become grey ones
+                        made, self.zoom_boxes = self.zoom_boxes, []
+                        self._zoom_read_prev()
+                        self.zoom_prev = self.zoom_prev or made
+                        self._zoom_list()
+                        self._zoom_draw()
                     if ok and self.what.startswith("Making the metadata"):
                         self._show_existing_report()
                         self.refresh_badge()

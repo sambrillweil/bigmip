@@ -560,3 +560,77 @@ def test_new_file_resets_the_app(tmp_path, tk_root):
     assert app.ds[2].get() and not app.ds[4].get() and not app.ds[8].get()          # default: a 2x smaller copy
     assert app.out_var.get() == default_outdir(b) and "-o" not in app.mip_args()
     assert "old run output" not in app.log.get("1.0", "end")
+
+
+def test_zoom_regions(tmp_path):
+    import json
+    vol = synthetic_volume()
+    p = str(tmp_path / "s.ims")
+    write_ims(p, vol)
+    st = open_stack(p)
+    for reg in [(13, 211, 57, 400), (250, 300, 500, 520)]:            # crossing block edges, at the image corner
+        y0, y1, x0, x1 = reg
+        for w in (1, 2):                                               # in-process and parallel
+            assert np.array_equal(st.max_projection(1, workers=w, block=128, region=reg), vol[1].max(0)[y0:y1, x0:x1])
+    st.close()
+    t = str(tmp_path / "f.ome.tif")
+    v2 = synthetic_volume(nc=3, nz=5, ny=200, nx=260)
+    write_ome_tiff(t, v2)
+    st = open_stack(t)
+    assert np.array_equal(st.max_projection(2, region=(10, 90, 20, 200)), v2[2].max(0)[10:90, 20:200])
+    st.close()
+    # --zoom X Y W H [LABEL] in microns (0.25 um pixels): 10, 20, 50 x 25 um = pixels x 40-240, y 80-180
+    main([p, "--zoom", "10", "20", "50", "25", "cell 1", "--zoom", "100", "50", "30", "30", "--workers", "2",
+          "--skip-notes"])
+    out = tmp_path / "s_bigmip_output"
+    a, md, px = _read_composite(str(out / "s_zoom_cell_1.tif"))
+    assert np.array_equal(a, vol.max(1)[:, 80:180, 40:240]) and abs(px - 0.25) < 1e-6
+    assert (out / "s_zoom_cell_1_bar10um.png").exists() and (out / "s_zoom_2.tif").exists()
+    assert not (out / "s_MIP.tif").exists()                           # zoom mode makes no full MIP
+    rec = json.loads((out / "s_zoom_boxes.json").read_text())
+    assert [r["label"] for r in rec] == ["cell_1", "2"] and rec[0]["x_px"] == 40 and rec[0]["w_px"] == 200
+
+
+def test_zoom_distance_from_onh(tmp_path):
+    from bigmip.zoom import OnhDistance
+    small = np.full((1, 200, 200), 10, np.uint16)                     # dim background
+    small[0, 20:180, 20:40] = small[0, 160:180, 20:180] = small[0, 20:180, 160:180] = 1000   # a U of tissue
+    d = OnhDistance(small, (1.0, 1.0), (1.0, 1.0), (30.0, 25.0))     # ONH at the top of the left arm
+    straight, along = d((170.0, 25.0))                                # top of the right arm
+    assert abs(straight - 140) < 1 and 380 < along < 470              # the path follows the U, not the gap
+    straight, along = d((30.0, 100.0))                                # same arm: about the straight line
+    assert abs(along - straight) < 10
+    assert d((100.0, 25.0))[1] is None or d((100.0, 25.0))[1] >= 75   # off tissue: never shorter than straight
+
+
+def test_zoom_onh_in_names_and_rename(tmp_path):
+    import json
+    from bigmip.rename import main as rename_main
+    vol = synthetic_volume()
+    p = str(tmp_path / "A_1.ims")
+    write_ims(p, vol)
+    main([p, "--zoom", "100", "30", "20", "20", "ONH", "--zoom", "10", "10", "20", "20", "peripheral",
+          "--workers", "1", "--skip-notes"])
+    out = tmp_path / "A_1_bigmip_output"
+    rec = {r["label"]: r for r in json.loads((out / "A_1_zoom_boxes.json").read_text())}
+    p_rec = rec["peripheral"]
+    assert p_rec["from_onh_straight_um"] > 80 and p_rec["files"][0].startswith("A_1_zoom_peripheral_")
+    assert "um-from-ONH" in p_rec["files"][0] and rec["ONH"]["from_onh_straight_um"] is None
+    main([p, "--zoom", "50", "50", "10", "10", "peripheral", "--workers", "1", "--skip-notes"])   # ONH remembered
+    assert "um-from-ONH" in json.loads((out / "A_1_zoom_boxes.json").read_text())[-1]["files"][0]
+    rename_main([p, "--replace", "A_1", "B_1", "--yes"])
+    new_out = tmp_path / "B_1_bigmip_output"
+    assert (new_out / "B_1_zoom_ONH.tif").exists() and (new_out / "B_1_zoom_boxes.json").exists()
+
+
+def test_app_zoom_command(tmp_path, tk_root):
+    from bigmip.gui import App
+    vol = synthetic_volume()
+    p = str(tmp_path / "s.ims")
+    write_ims(p, vol)
+    app = App(tk_root, p)
+    app.level_box.current(1)                                           # zooms are always full resolution
+    args = app.mip_args(zoom=[dict(x=10, y=20, w=50, h=25, label="ONH")])
+    assert args[args.index("--zoom"):args.index("--zoom") + 6] == ["--zoom", "10.00", "20.00", "50.00", "25.00",
+                                                                     "ONH"]
+    assert "--level" not in args and "--downsample" not in args and "--level" in app.mip_args()

@@ -6,7 +6,7 @@
 
 Related files = files in the image's folder, its own output folder (NAME_bigmip_output, which is renamed too), an older
 shared 'bigmip_output' folder and any --also FOLDER whose names are the image name followed by one of bigmip's suffixes
-(_histology, _MIP..., _metadata, _acquisition_settings). The old name
+(_histology, _MIP..., _zoom..., _metadata, _acquisition_settings). The old name
 is also replaced INSIDE those files when they are text (.toml .md .json .csv .txt), except the notes' change log, which
 keeps the history as it was (the rename itself is logged there). The image data itself is never changed, only its file
 name. A plan is shown and confirmed first; nothing is overwritten.
@@ -20,7 +20,7 @@ import sys
 
 from .output import OUTDIR_SUFFIX
 
-SUFFIXES = ("_histology", "_MIP", "_metadata", "_acquisition_settings")
+SUFFIXES = ("_histology", "_MIP", "_zoom", "_metadata", "_acquisition_settings")
 TEXT_EXT = (".toml", ".md", ".json", ".csv", ".txt")
 LOG = "rename_log.csv"
 

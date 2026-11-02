@@ -94,7 +94,7 @@ bigmip never keeps your images, notes or MIPs in this folder, so updating never 
 On a Mac, the first time, right-click it and choose Open. Or type `py -m bigmip.gui` in a terminal.
 
 At the top, click **Choose...** and pick your `.ims` or `.tif` file. bigmip shows the image size, pixel size, plane
-step and channels, and how much of its histology notes is filled in. Then work through the four tabs.
+step and channels, and how much of its histology notes is filled in. Then work through the five tabs.
 
 The mouse wheel only scrolls the page: it never changes a drop-down or a number box, so scrolling past a field
 can't change it by accident. To change one, click it.
@@ -168,7 +168,27 @@ logged the next time bigmip opens them.
 The box **"The same, as a command"** shows the exact command that the window runs. You can copy it into a terminal
 to repeat the run later or on another computer.
 
-### Tab 3: Metadata report
+### Tab 3: Zoom
+Full-resolution example images of a few regions: a cell in the periphery, the optic nerve head, the nerve.
+- An overview of the image appears (taken from a MIP you already made, or from a small version inside the `.ims`).
+- Choose a **label** (peripheral, ONH, nerve, or type your own) and a **box size**, then **click** on the overview to
+  place a box of that size, or **drag** to draw any box. Right-click a box to remove it.
+- **Mark the optic nerve head** with a box labelled **ONH**. Every other box then shows its **distance from the ONH**
+  in the list, and its files carry it in their name, e.g. `NAME_zoom_peripheral_2350um-from-ONH.tif`. The distance
+  is measured **along the tissue** (the shortest path that stays in the tissue, so in a curved section it follows the
+  retina instead of crossing the eye), from box center to box center, accurate to roughly 5–10 µm. The tissue
+  outline comes from the overview; where stitched tiles have bright background it can include some of it, so check
+  the number looks sensible. The straight-line
+  distance is recorded too. The ONH is remembered for the image, so it only needs marking once.
+- Click **Make zoomed MIPs**. Only those regions are read from the original file, at full resolution, with the
+  channels, colors, contrast and planes set in the Make MIP tab. Each box gives `NAME_zoom_LABEL….tif` (for Fiji) and
+  a PNG with a scale bar whose length is in its name (e.g. `_bar50um`). Regions you've made stay on the overview in
+  grey, and are listed in `NAME_zoom_boxes.json`.
+
+From a terminal: `py -m bigmip FILE --zoom X Y W H LABEL` (microns, top-left corner; repeat for more boxes). In Fiji,
+**Analyze › Measure** on a rectangle gives these numbers (BX, BY, Width, Height) for a calibrated image.
+
+### Tab 4: Metadata report
 For `.ims` files: **Make metadata report** writes a readable summary next to the image and shows it. It covers:
 - size, pixel size, Z-step and dates;
 - each channel's color, excitation/emission, **exposure, laser line and power, camera gain/bit depth, readout**;
@@ -182,7 +202,7 @@ It also writes the complete metadata (`_metadata.json`) and every hardware setti
 Andor Fusion stores the settings of every device on the microscope, including unused ones. The report shows the
 camera that recorded each channel and the laser lines that were switched on. The full list is in the CSV.
 
-### Tab 4: Rename
+### Tab 5: Rename
 ![Rename](docs/app_rename.png)
 
 Type a new name, or "Replace ... with ..." (e.g. 25X → 63X). Click **Preview** to see every file that will be
@@ -219,6 +239,7 @@ overwritten: if a file already exists, a new one is written with `_2`, `_3`, ...
 | `NAME_MIP_x2smaller.tif` | The same, 2× smaller (brightest pixel of each 2×2 block; made by default in the app). Opens quickly. 4× and 8× smaller copies are options. |
 | `NAME_MIP_RGB.tif` / `.png` | One flattened color picture (8-bit) for slides, optionally with a scale bar. |
 | `NAME_MIP_preview.png` | A small picture for a quick look. |
+| `NAME_zoom_LABEL….tif` / `.png` | Zoomed full-resolution regions from the Zoom tab (`--zoom`), with the distance from the ONH in the name when one is marked; `NAME_zoom_boxes.json` lists them. |
 | `NAME_histology.toml` | A copy of the notes the MIP was made with. |
 
 Next to the image, bigmip also keeps the notes (`NAME_histology.toml`), their change log
@@ -253,6 +274,8 @@ Options for `py -m bigmip FILE` (`py -m bigmip --help` lists them all):
 | `--auto-ranges` | Ignore the contrast stored in the file. | |
 | `--downsample K ...` | Also write smaller copies. | `--downsample 2 4` |
 | `--no-full` | Don't write the full-size MIP, only the smaller copies (and pictures made from the largest one). | `--no-full --downsample 4` |
+| `--zoom X Y W H [LABEL]` | Instead of the MIP: a full-resolution MIP of one region (microns, top-left corner). Repeat for more. | `--zoom 1200 3400 250 250 peripheral` |
+| `--onh X Y` | With `--zoom`: the optic nerve head's center (microns), for distances. Not needed when a region is labelled ONH. | `--onh 1474 1704` |
 | `--rgb` | Also write the flattened color picture. | |
 | `--scalebar UM` | Scale bar of UM microns on the pictures. | `--scalebar 100` |
 | `--gamma LIST` | Per-channel gamma for the pictures (below 1 brightens dim structures). | `--gamma 1,1,0.7` |
