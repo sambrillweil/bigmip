@@ -11,7 +11,8 @@ It also keeps your records together:
 - **Histology notes:** a form for the staining details (animal, dates, antibodies, dilutions, incubations, washes,
   mounting, what each channel shows). Every field is optional, and the notes travel with every output.
 - **Metadata report:** a readable summary of what the microscope recorded in an Imaris `.ims` file (channels,
-  exposure, laser power, objective, camera, Z-step, ...).
+  exposure, laser power, objective, camera, Z-step, ...), with the histology notes. It is made automatically, in the
+  image's output folder, whenever bigmip does anything with the image.
 - **Rename:** rename an image and every file made from it in one step, e.g. when the file name has the wrong
   objective in it.
 
@@ -191,7 +192,10 @@ From a terminal: `py -m bigmip FILE --zoom X Y W H LABEL` (microns, top-left cor
 **Analyze › Measure** on a rectangle gives these numbers (BX, BY, Width, Height) for a calibrated image.
 
 ### Tab 4: Metadata report
-For `.ims` files: **Make metadata report** writes a readable summary next to the image and shows it. It covers:
+The report is made **automatically**, in the image's output folder (`NAME_bigmip_output/NAME_metadata.md`), every time
+bigmip does something with the image: notes saved, MIP or zoom made, renamed. Each time it replaces the previous
+report, so it always matches the current notes. The tab shows it; **Update report now** remakes it by hand. For `.ims`
+files it covers:
 - size, pixel size, Z-step and dates;
 - each channel's color, excitation/emission, **exposure, laser line and power, camera gain/bit depth, readout**;
 - objective and camera;
@@ -203,6 +207,10 @@ It also writes the complete metadata (`_metadata.json`) and every hardware setti
 
 Andor Fusion stores the settings of every device on the microscope, including unused ones. The report shows the
 camera that recorded each channel and the laser lines that were switched on. The full list is in the CSV.
+
+For a TIFF, the report has the basics a TIFF holds (size, pixel size, channels) and the notes. Reports made by older
+versions of bigmip, next to the image, are left where they are; the app shows the new one once it exists. If the CSV is
+open in Excel, it can't be replaced: bigmip says so, and the next action updates it.
 
 ### Tab 5: Rename
 ![Rename](docs/app_rename.png)
@@ -259,7 +267,7 @@ quotes. On Windows, Shift + right-click a file and choose "Copy as path".
 | `py -m bigmip FILE --info` | Show what's in the file (instant). |
 | `py -m bigmip FILE` | Make the MIP. |
 | `py -m bigmip.notes FILE` | Open the notes form for FILE. `--check` lists entries that look unusual; `--show` prints the notes; `--text` uses a plain-text form instead of the window. |
-| `py -m bigmip.metadata FILE` | Make the metadata report (.ims). |
+| `py -m bigmip.metadata FILE` | Remake the metadata report by hand (the other commands make it automatically). |
 | `py -m bigmip.rename FILE NEW_NAME` | Rename FILE and everything made from it. Or `--replace 25X 63X` (wildcards allowed, e.g. `"D:\data\*25X*.ims"`), and `--undo` to reverse. |
 | `py -m bigmip.gui [FILE]` | Open the app. |
 

@@ -1,11 +1,15 @@
-"""Readable metadata report for an Imaris .ims file (as written by Andor Fusion / Dragonfly or Imaris).
+"""Readable metadata report for an image: an Imaris .ims file (as written by Andor Fusion / Dragonfly or Imaris) in
+full; for a TIFF, what bigmip reads from it (size, pixel size, channels). The histology notes are included.
 
-  bigmip-meta FILE.ims [-o OUTDIR]          (or:  python -m bigmip.metadata FILE.ims)
+  bigmip-meta FILE [-o OUTDIR]          (or:  python -m bigmip.metadata FILE)
 
-Writes, next to the file (or into OUTDIR):
+Writes, into the image's own output folder (NAME_bigmip_output, next to the image; or into OUTDIR):
   <name>_metadata.md                  readable summary: image, channels, objective, camera, lasers, filters, Z scan
   <name>_metadata.json                every attribute in the file + the parsed acquisition protocol (nothing dropped)
-  <name>_acquisition_settings.csv     every hardware setting stored per channel (one row per device feature)
+  <name>_acquisition_settings.csv     every hardware setting stored per channel (one row per device feature; .ims)
+
+The report is made automatically whenever bigmip does something with the image (notes saved, MIP or zoom made,
+renamed), so it always matches the current notes; each time it replaces the previous report (refresh()).
 
 About the acquisition settings: Fusion stores the settings of EVERY device known to the rig, including ones that were
 not used. The summary shows the camera that acquired each channel (named in the file) and the laser lines that were
@@ -15,13 +19,32 @@ the software (e.g. an objective changed by hand may not be reflected).
 """
 import argparse
 import csv
+import datetime
+import io
 import json
 import os
 import re
+import threading
+import time
 
 import numpy as np
 
+from .output import default_outdir
 from .readers import _attr
+
+REPORT_SUFFIXES = ("_metadata.md", "_metadata.json", "_acquisition_settings.csv")
+# Held while a report is written and while files are renamed: a rename never moves a folder a report is being
+# written into, and never meets the image held open by a report being made.
+REPORT_LOCK = threading.RLock()
+
+
+def report_path(image, suffix="_metadata.md"):
+    """The report file for `image`: in its output folder (NAME_bigmip_output). A report made by an older bigmip, next
+    to the image, is returned while there is none in the output folder yet."""
+    stem = os.path.splitext(os.path.basename(image))[0]
+    new = os.path.join(default_outdir(image), stem + suffix)
+    old = os.path.join(os.path.dirname(os.path.abspath(image)), stem + suffix)
+    return old if not os.path.exists(new) and os.path.exists(old) else new
 
 
 def _attrs(group):
@@ -72,6 +95,38 @@ def read_ims_metadata(path):
                     md["custom_json"][k] = _json_dataset(custom[k])
         md["levels"] = sorted(k for k in f["DataSet"].keys())
     return md
+
+
+def read_basic_metadata(path, meta=None):
+    """For a TIFF: what bigmip's reader finds in it (size, pixel size, channels, colors, display ranges)."""
+    if meta is None:
+        from .readers import open_stack
+        st = open_stack(path)
+        meta = st.meta
+        st.close()
+    return {"file": os.path.abspath(path), "size_GB": round(os.path.getsize(path) / 1e9, 2), "reader": dict(meta)}
+
+
+def summarize_basic(md):
+    m = md["reader"]
+    Z, Y, X = m["shape"]
+    px, py = m["pixel_um"]
+    py = py or px
+    hexcol = lambda c: "#%02x%02x%02x" % tuple(int(round(255 * v)) for v in c) if c else ""  # noqa: E731
+    return {
+        "image": {"size (X x Y x Z)": f"{X} x {Y} x {Z}",
+                  "pixel size (um)": f"{px:.4f} x {py:.4f}" if px else "unknown",
+                  "Z step (um)": f"{m['z_um']:.3f}" if m.get("z_um") else "n/a",
+                  "field size (um)": f"{X * px:.1f} x {Y * py:.1f}" if px else "",
+                  "file type": m.get("source", ""), "data type": m.get("dtype", ""),
+                  "file size (GB)": str(md["size_GB"])},
+        "channels": [{"#": str(i + 1), "name": n, "color": hexcol(c),
+                      "display range": " - ".join(f"{v:g}" for v in r) if r else ""}
+                     for i, (n, c, r) in enumerate(zip(m["names"], m["colors"], m["ranges"]))],
+        "camera": {}, "objective_psf": {}, "zscan": {}, "per_channel": {},
+        "notes": ["A TIFF holds only the basics (size, pixel size, channels); the acquisition settings (lasers, "
+                  "exposure, objective) are in the original .ims file."],
+    }
 
 
 def summarize(md):
@@ -219,7 +274,9 @@ def feature_rows(md):
 
 
 def to_markdown(s, md, notes=None):
-    L = [f"# {os.path.basename(md['file'])}", ""]
+    L = [f"# {os.path.basename(md['file'])}", "",
+         f"Report updated {datetime.datetime.now():%Y-%m-%d %H:%M}. bigmip remakes it whenever the notes are saved, a "
+         "MIP or zoom is made, or the image is renamed.", ""]
     L += ["## Image", "", "| | |", "|---|---|"]
     L += [f"| {k} | {v} |" for k, v in s["image"].items() if v not in ("", None)]
     if s["channels"]:
@@ -241,54 +298,105 @@ def to_markdown(s, md, notes=None):
     if notes:
         from .notes import markdown as notes_md
         L += ["", notes_md(notes).rstrip()]
+    elif s.get("histology_problem"):
+        L += ["", "## Histology", "", s["histology_problem"]]
     else:
         L += ["", "## Histology", "", "No histology notes found (create them with: py -m bigmip.notes FILE)."]
     if s["notes"]:
         L += ["", "## Notes", ""] + [f"- {n}" for n in s["notes"]]
-    L += ["", "Full metadata: the matching `_metadata.json`; every device setting per channel: "
-              "`_acquisition_settings.csv`."]
+    L += ["", "Full metadata: the matching `_metadata.json`" + ("; every device setting per channel: "
+                                                                 "`_acquisition_settings.csv`." if "custom_json" in md
+                                                                 else ".")]
     return "\n".join(L) + "\n"
 
 
-def write_report(path, outdir=None, notes_path=None):
+def _replace_file(path, text, encoding="utf-8", newline=None):
+    """Write `text` to a temporary file, then swap it in, so the report is never half-written (another bigmip run may
+    be writing or reading it). Raises PermissionError if the file is held open (e.g. the CSV open in Excel)."""
+    tmp = f"{path}.{os.getpid()}-{threading.get_ident()}.tmp"
+    try:
+        with open(tmp, "w", encoding=encoding, newline=newline) as fh:
+            fh.write(text)
+        for attempt in range(6):
+            try:
+                os.replace(tmp, path)
+                return path
+            except PermissionError:
+                if attempt == 5:
+                    raise
+                time.sleep(0.2)                  # briefly in use (being read, scanned, or synced): try again
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def write_report(path, outdir=None, notes_path=None, meta=None):
+    """Write the report into the image's output folder (or outdir), replacing the previous report: it is remade from
+    the image and the current notes each time. meta: the reader's metadata, if the file is already open (TIFF).
+    Returns (summary, files written)."""
     from .notes import find_notes, load
-    from .output import free_name
-    md = read_ims_metadata(path)
-    s = summarize(md)
-    np_ = find_notes(path, notes_path)
-    notes = load(np_) if np_ else None
-    s["histology_notes_file"] = np_
-    outdir = outdir or os.path.dirname(os.path.abspath(path))
-    os.makedirs(outdir, exist_ok=True)
-    stem = os.path.join(outdir, os.path.splitext(os.path.basename(path))[0])
-    written = []
-    p = free_name(stem + "_metadata.md")
-    with open(p, "w", encoding="utf-8") as fh:
-        fh.write(to_markdown(s, md, notes))
-    written.append(p)
-    p = free_name(stem + "_metadata.json")
-    with open(p, "w", encoding="utf-8") as fh:
-        json.dump({"summary": s, "histology": notes, "raw": md}, fh, indent=1, ensure_ascii=False, default=str)
-    written.append(p)
-    chans, rows = feature_rows(md)
-    if rows:
-        p = free_name(stem + "_acquisition_settings.csv")
-        with open(p, "w", newline="", encoding="utf-8-sig") as fh:
-            w = csv.writer(fh)
+    with REPORT_LOCK:
+        if path.lower().endswith(".ims"):
+            md = read_ims_metadata(path)
+            s = summarize(md)
+        else:
+            md = read_basic_metadata(path, meta)
+            s = summarize_basic(md)
+        np_ = find_notes(path, notes_path)
+        notes = None
+        if np_:
+            try:
+                notes = load(np_)
+            except SystemExit:                   # a hand-edited notes file that is not valid TOML
+                s["histology_problem"] = (f"The notes file {os.path.basename(np_)} could not be read (an entry is not "
+                                          "in the expected form): open the image in the bigmip app to see where.")
+        s["histology_notes_file"] = np_
+        outdir = outdir or default_outdir(path)
+        os.makedirs(outdir, exist_ok=True)
+        stem = os.path.join(outdir, os.path.splitext(os.path.basename(path))[0])
+        written, busy = [], []
+        files = [(stem + "_metadata.md", to_markdown(s, md, notes), "utf-8", None),
+                 (stem + "_metadata.json", json.dumps({"summary": s, "histology": notes, "raw": md}, indent=1,
+                                                      ensure_ascii=False, default=str), "utf-8", None)]
+        chans, rows = feature_rows(md) if "custom_json" in md else ([], [])
+        if rows:
+            buf = io.StringIO()
+            w = csv.writer(buf)
             w.writerow(["device id", "setting", "differs between channels"] + chans)
             w.writerows(rows)
-        written.append(p)
+            files.append((stem + "_acquisition_settings.csv", buf.getvalue(), "utf-8-sig", ""))
+        for p, text, enc, nl in files:
+            try:
+                written.append(_replace_file(p, text, enc, nl))
+            except PermissionError:
+                busy.append(os.path.basename(p))
+        if busy:
+            raise PermissionError(f"{', '.join(busy)} is open in another program (Excel?), so it was not updated; "
+                                  "close it and the next bigmip action updates it")
     return s, written
 
 
+def refresh(image, notes_path=None, meta=None):
+    """Remake the image's metadata report in its output folder. Called by every bigmip action on an image (notes saved,
+    MIP or zoom made, renamed); never stops that action. Returns (files written, problem or None)."""
+    with REPORT_LOCK:
+        if not image or not os.path.isfile(image):   # (e.g. renamed meanwhile: the rename makes its own report)
+            return [], None
+        try:
+            return write_report(image, None, notes_path, meta)[1], None
+        except Exception as e:                   # noqa: BLE001 -- a report problem must not stop the MIP / save
+            return [], f"the metadata report was not updated: {e}"
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="bigmip-meta", description="Readable metadata report for an Imaris .ims file.")
+    ap = argparse.ArgumentParser(prog="bigmip-meta", description="Readable metadata report for an image (.ims in full; "
+                                                                 "TIFF: the basics).")
     ap.add_argument("file")
-    ap.add_argument("-o", "--outdir", help="output folder (default: next to the file)")
+    ap.add_argument("-o", "--outdir", help="output folder (default: the image's own NAME_bigmip_output folder)")
     ap.add_argument("--notes", help="histology notes file (default: NAME_histology.toml or histology.toml next to it)")
     a = ap.parse_args(argv)
-    if not a.file.lower().endswith(".ims"):
-        raise SystemExit("bigmip-meta reads .ims files (for TIFFs, 'bigmip FILE --info' prints the basics)")
+    if not os.path.isfile(a.file):
+        raise SystemExit(f"file not found: {a.file}")
     s, written = write_report(a.file, a.outdir, a.notes)
     print(f"{os.path.basename(a.file)}")
     for k, v in s["image"].items():
@@ -296,8 +404,11 @@ def main(argv=None):
             print(f"  {k:28s} {v}")
     for c in s["channels"]:
         pc = s["per_channel"].get(c["name"], {})
-        print(f"  ch{c['#']} {c['name']:<24s} ex {c['excitation']:<8s} em {c['emission']:<8s} "
-              f"exposure {pc.get('exposure', '?'):<8} lasers {pc.get('lasers on', '?')}")
+        if "excitation" in c:
+            print(f"  ch{c['#']} {c['name']:<24s} ex {c['excitation']:<8s} em {c['emission']:<8s} "
+                  f"exposure {pc.get('exposure', '?'):<8} lasers {pc.get('lasers on', '?')}")
+        else:
+            print(f"  ch{c['#']} {c['name']:<24s} color {c['color']:<8s} display range {c['display range']}")
     print(f"  histology notes: {s['histology_notes_file'] or 'none (create with: py -m bigmip.notes FILE)'}")
     for w in written:
         print(f"  wrote {w}")

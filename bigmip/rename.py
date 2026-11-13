@@ -9,7 +9,8 @@ shared 'bigmip_output' folder and any --also FOLDER whose names are the image na
 (_histology, _MIP..., _zoom..., _metadata, _acquisition_settings). The old name
 is also replaced INSIDE those files when they are text (.toml .md .json .csv .txt), except the notes' change log, which
 keeps the history as it was (the rename itself is logged there). The image data itself is never changed, only its file
-name. A plan is shown and confirmed first; nothing is overwritten.
+name. A plan is shown and confirmed first; nothing is overwritten. Afterwards the image's metadata report is remade under
+the new name.
 """
 import argparse
 import csv
@@ -120,10 +121,26 @@ def _short(path, base):
         return path
 
 
-def do_rename(plan, old_stem, new_stem, assume_yes=False, batch=None, log_dir=None, skip_missing=False):
+def do_rename(plan, old_stem, new_stem, assume_yes=False, batch=None, log_dir=None, skip_missing=False, report=True):
     """Rename the files / folders in `plan`, in order (a rename: the image first). Returns (done, error): the renames
     made, and an explanation if something failed (renaming stops at the first failure; Undo puts back what was done).
-    log_dir = the image's folder (default: the folder of the first entry). skip_missing: skip entries that are gone."""
+    log_dir = the image's folder (default: the folder of the first entry). skip_missing: skip entries that are gone.
+    report: remake the renamed image's metadata report afterwards (the app does that in the background instead)."""
+    from .metadata import REPORT_LOCK
+    with REPORT_LOCK:              # waits for a report being made: it holds the image open and writes into its folder
+        done, error = _do_rename(plan, old_stem, new_stem, assume_yes, batch, log_dir, skip_missing)
+    img = next((n for _, n in done if os.path.isfile(n) and split_stem(os.path.basename(n))[0] == new_stem), None)
+    if report and img and not error:
+        from .metadata import refresh
+        written, problem = refresh(img)
+        if written:
+            print(f"Metadata report updated: {written[0]}")
+        elif problem:
+            print(f"Note: {problem}")
+    return done, error
+
+
+def _do_rename(plan, old_stem, new_stem, assume_yes, batch, log_dir, skip_missing):
     clashes = [n for _, n in plan if os.path.exists(n)]
     if clashes:
         return [], "These new names already exist, so nothing was renamed:\n" + "\n".join(f"  {c}" for c in clashes)
@@ -173,7 +190,7 @@ def do_rename(plan, old_stem, new_stem, assume_yes=False, batch=None, log_dir=No
     return done, error
 
 
-def undo(image, assume_yes=False):
+def undo(image, assume_yes=False, report=True):
     """Reverse the most recent rename batch that produced this image (logged in its folder)."""
     folder = os.path.dirname(os.path.abspath(image))
     p = os.path.join(folder, LOG)
@@ -189,7 +206,7 @@ def undo(image, assume_yes=False):
     new_stem = split_stem(os.path.basename(image))[0]
     plan = [(r["new_path"], r["old_path"]) for r in reversed(entries)]   # reverse order: a renamed folder goes back first
     return do_rename(plan, new_stem, old_stem, assume_yes=assume_yes, batch=f"undo of {batch}", log_dir=folder,
-                     skip_missing=True)
+                     skip_missing=True, report=report)
 
 
 def main(argv=None):

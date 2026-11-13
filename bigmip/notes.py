@@ -744,6 +744,13 @@ def main(argv=None):
         title = os.path.basename(a.target) if not a.folder else f"all images in {os.path.abspath(a.target)}"
         save(path, values, title)
         print(f"Created {path}" + (f"  (protocol copied from {a.src})" if a.src else ""))
+        if not a.folder:
+            from .metadata import refresh
+            written, problem = refresh(a.target, path)
+            if written:
+                print(f"Metadata report updated: {written[0]}")
+            elif problem:
+                print(f"Note: {problem}")
         print(f"Fill it in and save. Check with:  py -m bigmip.notes \"{a.target}\"{' --folder' if a.folder else ''} "
               "--check")
     if not a.no_open:

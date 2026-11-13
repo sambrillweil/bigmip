@@ -332,6 +332,11 @@ def main(argv=None):
         for r in remarks:
             print(f"  {r}")
 
+    # ---- metadata report (with the current notes), always in the image's own output folder
+    from .metadata import refresh
+    rep, problem = refresh(path, a.notes, meta=m)
+    step(f"metadata report updated: {rep[0]}" if rep else f"note: {problem}")
+
     # ---- which channels / planes
     chans = list(range(nC))
     if a.channels:

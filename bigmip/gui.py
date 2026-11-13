@@ -1,5 +1,6 @@
 """bigmip app: one window for everything -- pick an image, fill in its histology notes, make the MIP, make the
-metadata report, rename files.
+metadata report, rename files. The metadata report (with the notes) is remade in the image's output folder after every
+action: notes saved, MIP or zoom made, renamed.
 
   py -m bigmip.gui [IMAGE]          (or double-click start_bigmip.bat / start_bigmip.command)
 
@@ -17,7 +18,9 @@ import tkinter as tk
 from tkinter import colorchooser, filedialog, messagebox, ttk
 
 from .notes import OUTSIDE, changes_path, check, completeness, find_notes, load, notes_path_for, track
-from .notes_gui import GREEN, GRAY, ORANGE, RED, NotesForm, ScrollFrame, _dpi_aware, apply_style, open_path
+from .metadata import report_path
+from .notes_gui import (GREEN, GRAY, ORANGE, RED, NotesForm, ScrollFrame, _dpi_aware, apply_style, open_path,
+                        report_in_background)
 from .output import default_outdir
 
 
@@ -580,14 +583,16 @@ class App:
     def _build_meta(self):
         top = ttk.Frame(self.tab_meta)
         top.pack(fill="x")
-        self.meta_btn = ttk.Button(top, text="Make metadata report", style="Big.TButton", command=self.make_meta)
+        self.meta_btn = ttk.Button(top, text="Update report now", style="Big.TButton", command=self.make_meta)
         self.meta_btn.pack(side="left")
         ttk.Button(top, text="Open report", command=lambda: self._open_meta("_metadata.md")).pack(side="left",
                                                                                                 padx=8)
         ttk.Button(top, text="Open all settings (Excel)",
                    command=lambda: self._open_meta("_acquisition_settings.csv")).pack(side="left")
-        ttk.Label(self.tab_meta, text="For .ims files: image, channels, exposure, lasers, objective, camera, Z-scan "
-                                      "and the histology notes, as a readable report next to the image.",
+        ttk.Label(self.tab_meta, text="Image, channels, exposure, lasers, objective, camera, Z-scan (.ims; for a TIFF "
+                                      "the basics) and the histology notes, as a readable report in the image's output "
+                                      "folder. It is remade automatically whenever you save the notes, make a MIP or "
+                                      "zoom, or rename.",
                   style="Sub.TLabel").pack(anchor="w", pady=(6, 4))
         self.meta_view = tk.Text(self.tab_meta, wrap="none", font=("Consolas", 9), relief="solid", borderwidth=1)
         self.meta_view.pack(fill="both", expand=True)
@@ -595,11 +600,15 @@ class App:
     def _open_meta(self, suffix):
         if not self.image:
             return
-        p = os.path.splitext(self.image)[0] + suffix
+        p = report_path(self.image, suffix)
         if os.path.exists(p):
             open_path(p)
+        elif suffix == "_acquisition_settings.csv" and os.path.exists(report_path(self.image)):
+            messagebox.showinfo("bigmip", "A TIFF stores no acquisition settings; they are in the original .ims file.",
+                                parent=self.root)
         else:
-            messagebox.showinfo("bigmip", "Make the report first.", parent=self.root)
+            messagebox.showinfo("bigmip", "No report yet: it is made when you save the notes, make a MIP or zoom, or "
+                                          "press Update report now.", parent=self.root)
 
     # ---------------------------------------------------------------- rename tab
     def _build_rename(self):
@@ -718,7 +727,7 @@ class App:
         self.notes_form = None
         try:
             self.notes_form = NotesForm(holder, self.image, path, list(self.meta["names"]), embedded=True,
-                                        on_saved=self.refresh_badge)
+                                        on_saved=self.refresh_badge, on_report=self._show_existing_report)
         except SystemExit as e:                      # a hand-edited notes file that is not valid TOML
             ttk.Label(holder, text=str(e).strip(), style="Sub.TLabel", justify="left", wraplength=900
                       ).pack(anchor="w", pady=(20, 8))
@@ -758,15 +767,17 @@ class App:
         self.badge.configure(text=txt, foreground=col)
 
     def _show_existing_report(self):
+        if not getattr(self, "image", None):
+            return
         self.meta_view.delete("1.0", "end")
-        p = os.path.splitext(self.image)[0] + "_metadata.md"
-        if os.path.exists(p):
+        p = report_path(self.image)
+        try:
             with open(p, encoding="utf-8") as fh:
-                self.meta_view.insert("1.0", fh.read())
-        elif not self.image.lower().endswith(".ims"):
-            self.meta_view.insert("1.0", "The metadata report reads .ims files. For TIFFs, the basics are shown at "
-                                         "the top of the window.")
-        self.meta_btn.configure(state="normal" if self.image.lower().endswith(".ims") else "disabled")
+                self.meta_view.insert("1.0", f"({p})\n\n" + fh.read())
+        except OSError:
+            self.meta_view.insert("1.0", "No report yet. It is made in the image's output folder when you save the "
+                                         "notes, make a MIP or zoom, or rename; or press Update report now.")
+        self.meta_btn.configure(state="disabled" if self.proc else "normal")
 
     # ================================================================== MIP
     def mip_args(self, zoom=None):
@@ -936,7 +947,7 @@ class App:
                     ok = val == 0
                     self.proc = None
                     self.go_btn.configure(state="normal")
-                    self.meta_btn.configure(state="normal" if self.image.lower().endswith(".ims") else "disabled")
+                    self.meta_btn.configure(state="normal")
                     self.stop_btn.configure(state="disabled")
                     if ok:
                         self.prog.configure(value=1000)
@@ -950,8 +961,8 @@ class App:
                         self.zoom_prev = self.zoom_prev or made
                         self._zoom_list()
                         self._zoom_draw()
+                    self._show_existing_report()             # every run remakes the report first
                     if ok and self.what.startswith("Making the metadata"):
-                        self._show_existing_report()
                         self.refresh_badge()
         except queue.Empty:
             pass
@@ -1008,6 +1019,14 @@ class App:
             self.notes_form.save()
         self.run_tool(["-m", "bigmip.metadata", self.image], "Making the metadata report")
 
+    def _report_after(self, image):
+        """Remake the report in the background (e.g. after a rename) and show it."""
+        def done(written, problem):
+            if problem:
+                self.log_line(f"note: {problem}")
+            self._show_existing_report()
+        report_in_background(self.root, image, None, done)
+
     # ================================================================== rename
     def _rename_plan(self):
         from .rename import plan_rename, split_stem
@@ -1055,6 +1074,8 @@ class App:
         img = next((n for o, n in done if os.path.abspath(o) == os.path.abspath(self.image)), None)
         if img:
             self.set_image(img)               # (clears the log, so the renames are listed after it)
+            if not error:
+                self._report_after(img)       # the report under the new name, in the renamed output folder
         for o, n in done:
             self.log_line(f"renamed {o} -> {os.path.basename(n)}")
         if error:
@@ -1078,7 +1099,7 @@ class App:
         if self.notes_form and self.notes_form.dirty:
             self.notes_form.save()
         from .rename import do_rename
-        self._renamed(*do_rename(plan, old, new, assume_yes=True))
+        self._renamed(*do_rename(plan, old, new, assume_yes=True, report=False))
 
     def rename_undo(self):
         if not getattr(self, "image", None) or self._busy():
@@ -1087,7 +1108,7 @@ class App:
         if not messagebox.askyesno("bigmip", "Undo the last rename of this image?", parent=self.root):
             return
         try:
-            res = undo(self.image, assume_yes=True)
+            res = undo(self.image, assume_yes=True, report=False)
         except SystemExit as e:
             messagebox.showinfo("bigmip", str(e), parent=self.root)
             return

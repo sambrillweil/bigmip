@@ -130,6 +130,79 @@ def test_metadata_report(tmp_path):
     assert "## Channels" in md and "405_ch" in md
 
 
+def _wait_for_reports():
+    import threading
+    for t in threading.enumerate():
+        if t.name == "bigmip-report":
+            t.join(60)
+
+
+def test_report_made_by_every_action(tmp_path, tk_root):
+    """Notes saved, MIP, zoom, rename: each remakes the metadata report (with the current notes) in the image's own
+    output folder, replacing the previous one."""
+    from bigmip.metadata import refresh, report_path
+    from bigmip.notes_gui import NotesForm
+    from bigmip.rename import main as rename_main
+    vol = synthetic_volume()
+    p = str(tmp_path / "s.ims")
+    write_ims(p, vol)
+    out = tmp_path / "s_bigmip_output"
+    rep = out / "s_metadata.md"
+    form = NotesForm(tk_root, p, str(tmp_path / "s_histology.toml"), ["405_ch", "488_ch", "561_ch"])
+    form.vars[("sample", None, "sample_id")].set("ID77")
+    assert form.save()                                                 # notes saved -> report (in the background)
+    _wait_for_reports()
+    assert rep.exists() and "ID77" in rep.read_text(encoding="utf-8") and (out / "s_metadata.json").exists()
+    assert not (tmp_path / "s_metadata.md").exists() and report_path(p) == str(rep)
+    form.vars[("sample", None, "sample_id")].set("ID78")
+    form.save()
+    _wait_for_reports()
+    assert "ID78" in rep.read_text(encoding="utf-8") and not (out / "s_metadata_2.md").exists()   # replaced
+    os.remove(rep)
+    main([p, "-o", str(tmp_path / "elsewhere"), "--workers", "1", "--no-preview"])   # MIP sent elsewhere:
+    assert rep.exists() and not (tmp_path / "elsewhere" / "s_metadata.md").exists()  # the report stays with the image
+    os.remove(rep)
+    main([p, "--zoom", "10", "10", "20", "20", "cell", "--workers", "1"])            # zoom
+    assert rep.exists() and not list(tmp_path.glob("*.tmp")) and not list(out.glob("*.tmp"))
+    rename_main([p, "t", "--yes"])                                                    # rename
+    new = tmp_path / "t_bigmip_output" / "t_metadata.md"
+    assert new.exists() and new.read_text(encoding="utf-8").startswith("# t.ims")
+    tif = str(tmp_path / "f.ome.tif")                                  # a TIFF: the basics
+    write_ome_tiff(tif, synthetic_volume(nc=3, nz=3, ny=64, nx=80))
+    written, problem = refresh(tif)
+    assert problem is None and written[0] == report_path(tif) == str(tmp_path / "f.ome_bigmip_output" /
+                                                                     "f.ome_metadata.md")
+    txt = open(written[0], encoding="utf-8").read()
+    assert "405_test" in txt and "0.1510 x 0.1510" in txt and "No histology notes" in txt
+    bad = tmp_path / "bad.ims"                                         # a problem never stops the action
+    bad.write_bytes(b"x")
+    written, problem = refresh(str(bad))
+    assert written == [] and "not updated" in problem and not (tmp_path / "bad_bigmip_output").exists()
+    assert refresh(str(tmp_path / "missing.ims")) == ([], None)
+
+
+def test_app_shows_the_report(tmp_path, tk_root):
+    from bigmip.gui import App
+    vol = synthetic_volume()
+    p = str(tmp_path / "s.ims")
+    write_ims(p, vol)
+    old = tmp_path / "s_metadata.md"                                   # made by an older bigmip, next to the image
+    old.write_text("# s.ims (old report)", encoding="utf-8")
+    app = App(tk_root, p)
+    assert "old report" in app.meta_view.get("1.0", "end")
+    app.notes_form.vars[("sample", None, "sample_id")].set("ID5")
+    app.notes_form.save()
+    _wait_for_reports()
+    tk_root.update()
+    import time
+    t = time.time()
+    while "ID5" not in app.meta_view.get("1.0", "end") and time.time() - t < 10:   # shown once it is made
+        tk_root.update()
+        time.sleep(0.05)
+    assert "ID5" in app.meta_view.get("1.0", "end") and "s_bigmip_output" in app.meta_view.get("1.0", "2.0")
+    assert old.exists()                                                # the old one is left where it is
+
+
 def test_notes_optional_and_checked(tmp_path, capsys):
     from bigmip.notes import check, completeness, load, main as notes_main
     vol = synthetic_volume()
@@ -297,7 +370,7 @@ def test_rename_and_undo(tmp_path):
     write_notes(str(tmp_path / "ID1_25X_s_histology.toml"), ["405_ch", "488_ch", "561_ch"])
     main([p, "--workers", "1", "--downsample", "2"])                 # outputs in ID1_25X_s_bigmip_output/
     assert (tmp_path / "ID1_25X_s_bigmip_output" / "ID1_25X_s_MIP.tif").exists()
-    write_report(p)                                                    # _metadata.md/.json next to the image
+    write_report(p)                                                    # report in the image's output folder
     (tmp_path / "ID1_25X_s_crop.ims").write_bytes(b"x")              # another image: must NOT be touched
     (tmp_path / "bigmip_output").mkdir()                               # an older shared output folder is covered too
     (tmp_path / "bigmip_output" / "ID1_25X_s_MIP_old.tif").write_bytes(b"x")
@@ -309,8 +382,8 @@ def test_rename_and_undo(tmp_path):
     out = tmp_path / "ID1_63X_s_bigmip_output"
     assert (out / "ID1_63X_s_MIP.tif").exists() and (out / "ID1_63X_s_MIP_x2smaller.tif").exists()
     assert (out / "ID1_63X_s_histology.toml").exists() and (tmp_path / "ID1_63X_s_histology.toml").exists()
-    md = (tmp_path / "ID1_63X_s_metadata.md").read_text(encoding="utf-8")
-    assert "ID1_63X_s.ims" in md and "25X" not in md
+    md = (out / "ID1_63X_s_metadata.md").read_text(encoding="utf-8")    # remade under the new name
+    assert "ID1_63X_s.ims" in md and "25X" not in md and not (out / "ID1_25X_s_metadata.md").exists()
     hist = load(str(tmp_path / "ID1_63X_s_histology.toml"))
     assert hist["file_history"]["renamed_from"].startswith("ID1_25X_s")
     assert (tmp_path / "ID1_25X_s_crop.ims").exists()                 # unrelated file untouched

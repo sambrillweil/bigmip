@@ -7,6 +7,7 @@ import calendar
 import datetime
 import os
 import sys
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -181,9 +182,10 @@ class DatePicker(tk.Toplevel):
 class NotesForm:
     """The notes editor. Standalone (its own window) or embedded in a frame of the main bigmip app."""
 
-    def __init__(self, root, image=None, path=None, image_channels=None, embedded=False, on_saved=None):
+    def __init__(self, root, image=None, path=None, image_channels=None, embedded=False, on_saved=None,
+                 on_report=None):
         self.root, self.image, self.path = root, image, path
-        self.embedded, self.on_saved = embedded, on_saved
+        self.embedded, self.on_saved, self.on_report = embedded, on_saved, on_report
         self.win = root.winfo_toplevel()
         self.image_channels = image_channels or []
         self.vars = {}          # (section, index or None, field) -> StringVar
@@ -467,7 +469,15 @@ class NotesForm:
         self.status.configure(text=f"Saved {self.path}.  " + self.status.cget("text"))
         if self.on_saved:
             self.on_saved()
+        if self.image:                        # the metadata report carries the notes: remake it
+            report_in_background(self.win, self.image, self.path, self._report_done)
         return True
+
+    def _report_done(self, written, problem):
+        if problem:
+            self.status.configure(text=f"Saved, but {problem}.", foreground=ACCENT)
+        if self.on_report:
+            self.on_report()
 
     def save_close(self):
         if self.save():
@@ -511,6 +521,30 @@ class NotesForm:
             messagebox.showinfo("Histology notes", "No changes logged yet: the change log starts with the first save "
                                                    f"(it will be {os.path.basename(p) or 'next to the notes'}).",
                                 parent=self.win)
+
+
+def report_in_background(widget, image, notes_path, done):
+    """Remake the image's metadata report (in its output folder) without freezing the window: reading the image's
+    header can take seconds on a cloud drive. done(written, problem) then runs in the window's thread. The thread is
+    not a daemon, so closing the window lets the report finish."""
+    from .metadata import refresh
+    box = {}
+    t = threading.Thread(target=lambda: box.update(res=refresh(image, notes_path)), name="bigmip-report")
+    t.start()
+
+    def poll():
+        try:
+            if t.is_alive():
+                widget.after(150, poll)
+            else:
+                done(*box.get("res", ([], "the metadata report was not updated")))
+        except tk.TclError:                   # the window was closed meanwhile
+            pass
+    try:
+        widget.after(150, poll)
+    except tk.TclError:
+        pass
+    return t
 
 
 def open_path(p):
